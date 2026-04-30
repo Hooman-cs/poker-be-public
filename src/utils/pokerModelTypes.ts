@@ -149,17 +149,28 @@ export interface IAmountBreakdown {
   total: number;            // Total amount for the transaction
 }
 
-// Interface for individual wallet transactions
+// // Interface for individual wallet transactions
+// export interface IWalletTransaction {
+//   createdOn: Date;                    // Timestamp when transaction was created
+//   completedOn?: Date;                 // Optional completion timestamp
+//   status: 'failed' | 'completed' | 'pending';  // Status of the transaction
+//   amount: IAmountBreakdown;           // Nested breakdown of amounts
+//   type: 'deposit' | 'withdraw' | 'deskIn' | 'deskWithdraw' | 'bonus';  // Type of transaction
+//   remark?: string;                    // Optional remark for the transaction
+//   DeskId?: mongoose.Types.ObjectId;                  // Reference to PokerDesk (if applicable)
+//   BankTransactionId?: mongoose.Types.ObjectId;  
+//   pmgtId?: mongoose.Types.ObjectId;   // Reference to BankTransaction (if applicable)
+// }
 export interface IWalletTransaction {
-  createdOn: Date;                    // Timestamp when transaction was created
-  completedOn?: Date;                 // Optional completion timestamp
-  status: 'failed' | 'completed' | 'pending';  // Status of the transaction
-  amount: IAmountBreakdown;           // Nested breakdown of amounts
-  type: 'deposit' | 'withdraw' | 'deskIn' | 'deskWithdraw' | 'bonus';  // Type of transaction
-  remark?: string;                    // Optional remark for the transaction
-  DeskId?: mongoose.Types.ObjectId;                  // Reference to PokerDesk (if applicable)
+  createdOn: Date;
+  completedOn?: Date;
+  status: 'failed' | 'completed' | 'pending' | 'reversed'; // <-- Added 'reversed' here
+  amount: IAmountBreakdown;
+  type: 'deposit' | 'withdraw' | 'deskIn' | 'deskWithdraw' | 'bonus' | 'pgDeposit';
+  remark?: string;
+  DeskId?: mongoose.Types.ObjectId;
   BankTransactionId?: mongoose.Types.ObjectId;  
-  pmgtId?: mongoose.Types.ObjectId;   // Reference to BankTransaction (if applicable)
+  pmgtId?: mongoose.Types.ObjectId;
 }
 
 // Interface for the wallet containing balances and transactions
@@ -177,6 +188,7 @@ export interface IUser extends Document {
   lastLogin: Date;
   isActive: boolean;
   status: string;
+  role?: 'user' | 'editor' | 'superadmin' | 'viewer';
   wallet: IWallet;
   bankAccounts: IBankAccount[];
   deviceInfo: string;       // Device information string (e.g., browser or device details)
@@ -186,3 +198,113 @@ export interface IUser extends Document {
   longitude?: number;       // Optional longitude for location
   updateLastLogin(req: Request): Promise<void>;
 } 
+
+// -----------------------------------------------------------------------------
+// Global Poker Configurations & Modes
+// -----------------------------------------------------------------------------
+
+// export interface IPoker extends mongoose.Document {
+//   gameType: 'NLH' | 'PLO4' | 'PLO5' | 'OmahaHILO' | 'SDH' | 'STUD' | 'RAZZ' | 'PINEAPPLE' | 'COURCHEVEL' | '5CD' | 'BADUGI' | 'MIXED';
+//   // Add other base poker properties here as needed
+// }
+export interface IPoker extends mongoose.Document {
+  name: string;
+  gameType: 'NLH' | 'PLO4' | 'PLO5' | 'OmahaHILO' | 'SDH' | 'STUD' | 'RAZZ' | 'PINEAPPLE' | 'COURCHEVEL' | '5CD' | 'BADUGI' | 'MIXED';
+  objective?: string;
+  rules?: string;       // Note: If your rules are stored as an array in the DB, change this to string[]
+  description?: string;
+  status: 'active' | 'maintenance' | 'disable'; // Matches the query status checks we wrote
+  blindsOrAntes?: 'blinds' | 'antes' | 'both';  // Carried over from legacy queries
+}
+
+export interface IPokerMode extends mongoose.Document {
+  pokerId: mongoose.Types.ObjectId;
+  stake: number;
+  minBuyIn: number;
+  maxBuyIn: number; 
+  bType: 'blinds' | 'antes' | 'both';
+  status: 'active' | 'disable';
+  createdAt: Date;
+  mode: 'practice' | 'cash';
+  updatedAt: Date;
+}
+
+// -----------------------------------------------------------------------------
+// Populated API Response Types
+// -----------------------------------------------------------------------------
+
+export interface IPopulatedBankTransaction {
+  _id: mongoose.Types.ObjectId;
+  createdOn: Date;
+  status: string;
+  amount: number;
+  type: string;
+  remark?: string;
+  imageUrl?: string;
+  bankId?: {
+    accountNumber: string;
+    bankName: string;
+    ifscCode: string;
+    accountHolderName: string;
+  };
+}
+
+// -----------------------------------------------------------------------------
+// Admin Dashboard Component Types
+// -----------------------------------------------------------------------------
+
+export interface IUserStats {
+  totalUsers: number;
+  activeUsers: number;
+  inactiveUsers: number;
+  suspendedUsers: number;
+  usersRegisteredToday: number;
+}
+
+export interface IDeviceStat {
+  _id: 'android' | 'ios';
+  count: number;
+}
+
+export interface IGameHistoryPlayer {
+  username: string;
+  totalBet: number;
+  status: string;
+}
+
+export interface IGameHistoryPotWinner {
+  username: string;
+  amount: number;
+}
+
+export interface IGameHistoryPot {
+  winners: IGameHistoryPotWinner[];
+}
+
+export interface IGameHistory {
+  tableId: string;
+  deskName: string;
+  totalBet: number;
+  smallBlind: number | null;
+  bigBlind: number | null;
+  players: IGameHistoryPlayer[];
+  pots: IGameHistoryPot[];
+  createdAt: string;
+  gameType: string;
+}
+
+export interface IBankTransactionHistory {
+  _id: string;
+  userId?: { 
+    _id: string;
+    username: string;
+  };
+  amount: number;
+  type: 'deposit' | 'withdraw';
+  status: 'waiting' | 'completed' | 'successful' | 'failed' | 'pending';
+  bankId?: { 
+    bankName: string; 
+    accountHolderName: string;
+  };
+  createdAt?: string;
+}

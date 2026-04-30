@@ -17,7 +17,7 @@ import {
 } from '../utils/pokerModelTypes'; // Adjust the path based on your folder structure
 // import {evaluateHands, evaluatePots} from '../utils/pokerHand';
 import {evaluatePots} from '../utils/evaluate';
-import createPots from '@/utils/createPots';
+import {createPots} from '@/utils/createPots';
  
 // Define your Seat schema
 const SeatSchema = new Schema<ISeat>({
