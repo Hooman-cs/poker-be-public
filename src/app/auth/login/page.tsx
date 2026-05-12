@@ -1,35 +1,47 @@
 'use client';
-import { useState } from 'react';
+
+import { useState, FormEvent } from 'react';
 import axios from 'axios';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
+/**
+ * Admin Login Page
+ * Handles administrator authentication using Axios and redirects to the dashboard.
+ */
 export default function Login() {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
-    const [error, setError] = useState("");
-    const [loading, setLoading] = useState(false); // Track loading state
+    const [error, setError] = useState('');
+    const [loading, setLoading] = useState(false);
     const router = useRouter();
 
-    const handleSubmit = async (e: any) => {
+    /**
+     * Handles form submission with strict React Event typing.
+     */
+    const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
         e.preventDefault();
-        setLoading(true); // Set loading to true when the request starts
+        setLoading(true);
+        setError(''); // Clear previous errors on new submission
 
         try {
             const response = await axios.post('/api/admin/auth/login', { email, password });
 
-            // Handle successful response
             if (response.status === 200) {
-                console.log(response.data);
-    
-                // Redirect to the admin page
-                router.push('/admin/stastics');
+                console.log('Login successful:', response.data);
+                // Redirect to the exact path in your folder structure
+                router.push('/admin/statistics');
             }
-        } catch (err) {
-            setError('Failed to login. Please check your credentials.');
-            console.error(err);
+        } catch (err: unknown) {
+            // Strictly type the error to safely access Axios payload responses
+            if (axios.isAxiosError(err)) {
+                setError(err.response?.data?.message || 'Failed to login. Please check your credentials.');
+            } else {
+                setError('An unexpected system error occurred.');
+            }
+            console.error('[Login Error]:', err);
         } finally {
-            setLoading(false); // Set loading to false when the request completes
+            setLoading(false);
         }
     };
 
@@ -71,7 +83,7 @@ export default function Login() {
                                     required 
                                 />
                             </div>
-                            {error && <div className="text-sm text-red-600">{error}</div>}
+                            {error && <div className="text-sm text-red-600 font-medium">{error}</div>}
                             <div className="flex items-center justify-between">
                                 <div className="flex items-start">
                                     <div className="flex items-center h-5">
@@ -89,15 +101,14 @@ export default function Login() {
                                 <Link href="#" className="text-sm font-medium text-primary-600 hover:underline dark:text-primary-500">Forgot password?</Link>
                             </div>
 
-                            {/* Show loading spinner or button */}
                             <button 
                                 type="submit" 
-                                className={`w-full text-white ${loading ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'} focus:ring-4 focus:outline-none focus:ring-primary-300 font-medium rounded-lg text-sm px-5 py-2.5 text-center dark:bg-primary-600 dark:hover:bg-primary-700 dark:focus:ring-primary-800`}
-                                disabled={loading} // Disable button when loading
+                                className={`w-full text-white ${loading ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'} focus:ring-4 focus:outline-none focus:ring-primary-300 font-medium rounded-lg text-sm px-5 py-2.5 text-center dark:bg-primary-600 dark:hover:bg-primary-700 dark:focus:ring-primary-800 transition-colors`}
+                                disabled={loading}
                             >
                                 {loading ? (
                                     <div className="flex justify-center items-center space-x-2">
-                                        <div className="w-5 h-5 border-t-4 border-blue-600 border-solid rounded-full animate-spin"></div>
+                                        <div className="w-5 h-5 border-t-2 border-b-2 border-white border-solid rounded-full animate-spin"></div>
                                         <span>Loading...</span>
                                     </div>
                                 ) : 'Sign in'}

@@ -1,8 +1,14 @@
 'use client';
-import React, { useState, useEffect } from 'react';
+
+import React, { useState, useEffect, useCallback, ChangeEvent, FormEvent } from 'react';
 import { useParams } from 'next/navigation';
 import axios from 'axios';
 import Link from 'next/link';
+import LatestGameHistory from '@/components/admin/LatestGameHistory';
+
+// -----------------------------------------------------------------------------
+// TypeScript Interfaces
+// -----------------------------------------------------------------------------
 interface PokerMode {
   _id: string;
   pokerId: string;
@@ -13,377 +19,341 @@ interface PokerMode {
   bType: 'blinds' | 'antes' | 'both';
   status: 'active' | 'disable';
   description?: string;
-  mode : 'cash' | 'practice';
-  createdAt: Date;
-  updatedAt: Date;
+  mode: 'cash' | 'practice';
+  createdAt: string;
+  updatedAt: string;
 }
 
-const PokerModeAdmin: React.FC = () => {
-  const params : any = useParams();
-  const [pokerUID, setPokerUID] = useState("");
-  const pokerId = params?.pokerId as string | undefined;
+export default function PokerModeAdmin() {
+  const params = useParams<{ pokerId: string }>();
+  const pokerId = params?.pokerId;
+
+  // Data State
   const [pokerModes, setPokerModes] = useState<PokerMode[]>([]);
-  const [newPokerMode, setNewPokerMode] = useState<Omit<PokerMode, '_id' | 'createdAt' | 'updatedAt'>>({
-    pokerId: pokerId!,
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Form State
+  const [newPokerMode, setNewPokerMode] = useState<Partial<PokerMode>>({
+    pokerId: pokerId || '',
     stake: 0,
     minBuyIn: 0,
     maxBuyIn: 0,
-    minPlayerCount: 0,
+    minPlayerCount: 2,
     bType: 'blinds',
     status: 'active',
-    mode:'cash',
+    mode: 'cash',
     description: ''
   });
-  const [editingPokerMode, setEditingPokerMode] = useState<Partial<PokerMode>>({});
+
+  // Edit State
   const [editingPokerModeId, setEditingPokerModeId] = useState<string | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingPokerMode, setEditingPokerMode] = useState<Partial<PokerMode>>({});
 
-  useEffect(() => {
-    if (pokerId) {
-      const fetchPokerModes = async () => {
-        try {
-          const response = await axios.get(`/api/admin/pokerModes`, { params: { pokerId } });
-          setPokerModes(response.data);
-        } catch (error) {
-          console.error('Failed to fetch poker modes:', error);
-        }
-      };
+  const fetchPokerModes = useCallback(async () => {
+    if (!pokerId) return;
 
-      fetchPokerModes();
+    setLoading(true);
+    setError(null);
+    try {
+      // API MIGRATION: Modern GET request with query params
+      const response = await axios.get('/api/admin/pokerModes', {
+        params: { pokerId }
+      });
+      setPokerModes(response.data.data || response.data);
+    } catch (err) {
+      console.error('Error fetching poker modes:', err);
+      setError('Failed to load poker modes.');
+    } finally {
+      setLoading(false);
     }
   }, [pokerId]);
 
-  
+  useEffect(() => {
+    fetchPokerModes();
+  }, [fetchPokerModes]);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    setNewPokerMode({ ...newPokerMode, [e.target.name]: e.target.value });
+  // -----------------------------------------------------------------------------
+  // Form Handlers
+  // -----------------------------------------------------------------------------
+  const handleInputChange = (e: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target;
+    setNewPokerMode(prev => ({ ...prev, [name]: value }));
   };
 
-  const handleTextAreaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setNewPokerMode({ ...newPokerMode, [e.target.name]: e.target.value });
+  const handleEditChange = (e: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target;
+    setEditingPokerMode(prev => ({ ...prev, [name]: value }));
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  // -----------------------------------------------------------------------------
+  // CRUD Operations
+  // -----------------------------------------------------------------------------
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!newPokerMode.pokerId) {
-      console.error('Poker ID is required');
-      return;
-    }
+    if (!pokerId) return;
 
     try {
-      const response = await fetch('/api/admin/pokerModes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newPokerMode),
-      });
-      if (!response.ok) throw new Error('Network response was not ok');
-      const data = await response.json();
-      setPokerModes([...pokerModes, { ...newPokerMode, _id: data._id } as PokerMode]);
+      // API MIGRATION: Modern POST
+      await axios.post('/api/admin/pokerModes', { ...newPokerMode, pokerId });
+      
       setNewPokerMode({
-        pokerId: pokerId || '',
-        stake: 0,
-        minBuyIn: 0,
-        maxBuyIn: 0,
-        minPlayerCount: 0,
-        bType: 'blinds',
-        status: 'active',
-        mode : 'cash',
-        description: ''
+        pokerId, stake: 0, minBuyIn: 0, maxBuyIn: 0, minPlayerCount: 2, 
+        bType: 'blinds', status: 'active', mode: 'cash', description: ''
       });
-      setIsModalOpen(false);
+      fetchPokerModes();
     } catch (error) {
-      console.error('Failed to create poker mode:', error);
+      console.error('Error creating poker mode:', error);
+      alert('Failed to create poker mode.');
     }
   };
 
-  const startEditing = (pokerMode: PokerMode) => {
-    setEditingPokerMode(pokerMode);
-    setEditingPokerModeId(pokerMode._id);
-    setIsModalOpen(true);
+  const startEditing = (mode: PokerMode) => {
+    setEditingPokerModeId(mode._id);
+    setEditingPokerMode({ ...mode });
   };
 
-  const handleEditChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    setEditingPokerMode({ ...editingPokerMode, [e.target.name]: e.target.value });
+  const cancelEditing = () => {
+    setEditingPokerModeId(null);
+    setEditingPokerMode({});
   };
 
-  const handleEditTextAreaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setEditingPokerMode({ ...editingPokerMode, [e.target.name]: e.target.value });
-  };
-
-  const handleUpdate = async (e: React.FormEvent) => {
+  const handleEditSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!editingPokerModeId) return;
 
     try {
-      const response = await fetch(`/api/admin/pokerModes/${editingPokerModeId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editingPokerMode),
-      });
-      if (!response.ok) throw new Error('Network response was not ok');
-      setPokerModes(pokerModes.map((p) => (p._id === editingPokerModeId ? { ...editingPokerMode, _id: editingPokerModeId } as PokerMode : p)));
-      setEditingPokerMode({});
-      setEditingPokerModeId(null);
-      setIsModalOpen(false);
+      // API MIGRATION: Modern PUT by ID
+      await axios.put(`/api/admin/pokerModes/${editingPokerModeId}`, editingPokerMode);
+      cancelEditing();
+      fetchPokerModes();
     } catch (error) {
-      console.error('Failed to update poker mode:', error);
+      console.error('Error updating poker mode:', error);
+      alert('Failed to update poker mode.');
     }
   };
 
   const handleDelete = async (id: string) => {
+    if (!window.confirm("Are you sure you want to delete this Poker Mode? All associated desks will be affected.")) return;
+
     try {
-      const response = await fetch(`/api/admin/pokerModes/${id}`, { method: 'DELETE' });
-      if (!response.ok) throw new Error('Network response was not ok');
-      setPokerModes(pokerModes.filter((pokerMode) => pokerMode._id !== id));
+      // API MIGRATION: Modern DELETE by ID
+      await axios.delete(`/api/admin/pokerModes/${id}`);
+      fetchPokerModes();
     } catch (error) {
-      console.error('Failed to delete poker mode:', error);
+      console.error('Error deleting poker mode:', error);
+      alert('Failed to delete poker mode.');
     }
   };
 
-  const cancelEditing = () => {
-    setEditingPokerMode({});
-    setEditingPokerModeId(null);
-    setIsModalOpen(false);
-  };
-
   return (
-    <div className="container mx-auto px-4 pb-8">
-    
-    <div className="flex justify-between items-center mb-6 bg-gradient-to-r from-green-500 via-teal-400 to-cyan-500 px-4 py-2 rounded-lg">
-  <h1 className="text-2xl font-bold text-white flex-grow">
-    Poker Mode
-  </h1>
-
-  {/* Button to open the modal */}
-  <button
-    onClick={() => setIsModalOpen(true)}
-    className="px-6 py-3 bg-orange-400 text-black font-bold rounded-lg hover:bg-orange-500 transition-all duration-300"
-  >
-    Create Poker Mode
-  </button>
-</div>
-
-
-
-      {/* <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Poker ID</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stake</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Min Buy-In</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Max Buy-In</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Max Player Count</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Blinds/Antes</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {pokerModes.map((pokerMode) => (
-              <tr key={pokerMode._id}>
-                <td className="px-6 py-4 whitespace-nowrap">{pokerMode.pokerId}</td>
-                <td className="px-6 py-4 whitespace-nowrap">{pokerMode.stake}</td>
-                <td className="px-6 py-4 whitespace-nowrap">{pokerMode.minBuyIn}</td>
-                <td className="px-6 py-4 whitespace-nowrap">{pokerMode.maxBuyIn}</td>
-                <td className="px-6 py-4 whitespace-nowrap">{pokerMode.maxPlayerCount}</td>
-                <td className="px-6 py-4 whitespace-nowrap">{pokerMode.blindsOrAntes}</td>
-                <td className="px-6 py-4 whitespace-nowrap">{pokerMode.status}</td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <button
-                    onClick={() => startEditing(pokerMode)}
-                    className="px-2 py-1 bg-yellow-500 text-white rounded-md hover:bg-yellow-600"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => handleDelete(pokerMode._id)}
-                    className="ml-2 px-2 py-1 bg-red-600 text-white rounded-md hover:bg-red-700"
-                  >
-                    Delete
-                  </button>
-
-                  <Link href={`/admin/pokerDesk/${pokerMode._id}`}>
-                     details
-                  </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div> */}
-
-      <section> 
-  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-    {pokerModes.map((pokerMode) => (
-      <div key={pokerMode._id} className="bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
-        <div className="p-6">
-          <h3 className="text-xl font-semibold text-gray-800">Poker ID: {pokerMode.pokerId}</h3>
-          <p className="text-gray-600 mt-2">Stake: {pokerMode.stake}</p>
-          <p className="text-gray-600">Min Buy-In: {pokerMode.minBuyIn}</p>
-          <p className="text-gray-600">Max Buy-In: {pokerMode.maxBuyIn}</p>
-          <p className="text-gray-600">Max Player Count: {pokerMode.minPlayerCount}</p>
-          <p className="text-gray-600">mode : {pokerMode.mode}</p>
-          <p className="text-gray-600">Blinds/Antes: {pokerMode.bType}</p>
-          <p className={`text-sm mt-3 ${pokerMode.status === 'active' ? 'text-green-600' : 'text-red-600'}`}>
-            Status: {pokerMode.status}
-          </p>
-        </div>
-        <div className="flex justify-between p-4 bg-gray-100">
-          <button
-            onClick={() => startEditing(pokerMode)}
-            className="px-3 py-1 bg-yellow-500 text-white rounded-md hover:bg-yellow-600 font-medium"
-          >
-            Edit
-          </button>
-          <button
-            onClick={() => handleDelete(pokerMode._id)}
-            className="px-3 py-1 bg-red-600 text-white rounded-md hover:bg-red-700 font-medium"
-          >
-            Delete
-          </button>
-          <Link href={`/admin/pokerDesk/${pokerMode._id}`}>
-            <span className="text-indigo-600 hover:text-indigo-800 font-medium">Details</span>
-          </Link>
-        </div>
-      </div>
-    ))}
-  </div>
-</section>
-
-
-      {isModalOpen && (
-        <div className="fixed inset-0 flex items-center justify-center z-50 bg-gray-900 bg-opacity-50">
-          <div className="bg-white p-6 rounded-lg shadow-lg w-full max-w-lg">
-            <h2 className="text-lg font-bold mb-4">{editingPokerModeId ? 'Edit Poker Mode' : 'Create Poker Mode'}</h2>
-            <form onSubmit={editingPokerModeId ? handleUpdate : handleSubmit}>
-              <div className="mb-4">
-                <label htmlFor="pokerId" className="block text-sm font-medium text-gray-700">Poker ID</label>
-                <p>
-                  {pokerId}
-                </p>
-              </div>
-              <div className="mb-4">
-                <label htmlFor="stake" className="block text-sm font-medium text-gray-700">Stake</label>
-                <input
-                  id="stake"
-                  name="stake"
-                  type="number"
-                  value={editingPokerModeId ? editingPokerMode.stake : newPokerMode.stake}
-                  onChange={editingPokerModeId ? handleEditChange : handleChange}
-                  className="mt-1 block w-full border-gray-300 rounded-md shadow-sm"
-                />
-              </div>
-              <div className="mb-4">
-                <label htmlFor="minBuyIn" className="block text-sm font-medium text-gray-700">Min Buy-In</label>
-                <input
-                  id="minBuyIn"
-                  name="minBuyIn"
-                  type="number"
-                  value={editingPokerModeId ? editingPokerMode.minBuyIn : newPokerMode.minBuyIn}
-                  onChange={editingPokerModeId ? handleEditChange : handleChange}
-                  className="mt-1 block w-full border-gray-300 rounded-md shadow-sm"
-                  required
-                />
-              </div>
-              <div className="mb-4">
-                <label htmlFor="maxBuyIn" className="block text-sm font-medium text-gray-700">Max Buy-In</label>
-                <input
-                  id="maxBuyIn"
-                  name="maxBuyIn"
-                  type="number"
-                  value={editingPokerModeId ? editingPokerMode.maxBuyIn : newPokerMode.maxBuyIn}
-                  onChange={editingPokerModeId ? handleEditChange : handleChange}
-                  className="mt-1 block w-full border-gray-300 rounded-md shadow-sm"
-                  required
-                />
-              </div>
-              <div className="mb-4">
-                <label htmlFor="maxPlayerCount" className="block text-sm font-medium text-gray-700">Max Player Count</label>
-                <input
-                  id="maxPlayerCount"
-                  name="maxPlayerCount"
-                  type="number"
-                  value={editingPokerModeId ? editingPokerMode.minPlayerCount : newPokerMode.minPlayerCount}
-                  onChange={editingPokerModeId ? handleEditChange : handleChange}
-                  className="mt-1 block w-full border-gray-300 rounded-md shadow-sm"
-                  required
-                />
-              </div>
-              <div className="mb-4">
-                <label htmlFor="mode" className="block text-sm font-medium text-gray-700">mode</label>
-                <select
-  id="mode"
-  name="mode" // Correct this if not set
-  value={editingPokerModeId ? editingPokerMode.mode : newPokerMode.mode}
-  onChange={editingPokerModeId ? handleEditChange : handleChange}
-  className="mt-1 block w-full border-gray-300 rounded-md shadow-sm"
-  required
->
-  <option value="cash">Cash</option>
-  <option value="practice">Practice</option>
-        </select>
-
-              </div>
-              <div className="mb-4">
-                <label htmlFor="blindsOrAntes" className="block text-sm font-medium text-gray-700">Blinds or Antes</label>
-                <select
-                  id="blindsOrAntes"
-                  name="blindsOrAntes"
-                  value={editingPokerModeId ? editingPokerMode.bType : newPokerMode.bType}
-                  onChange={editingPokerModeId ? handleEditChange : handleChange}
-                  className="mt-1 block w-full border-gray-300 rounded-md shadow-sm"
-                  required
-                >
-                  <option value="blinds">Blinds</option>
-                  <option value="antes">Antes</option>
-                </select>
-              </div>
-              <div className="mb-4">
-                <label htmlFor="status" className="block text-sm font-medium text-gray-700">Status</label>
-                <select
-                  id="status"
-                  name="status"
-                  value={editingPokerModeId ? editingPokerMode.status : newPokerMode.status}
-                  onChange={editingPokerModeId ? handleEditChange : handleChange}
-                  className="mt-1 block w-full border-gray-300 rounded-md shadow-sm"
-                  required
-                >
-                  <option value="active">Active</option>
-                  <option value="disable">Disable</option>
-                </select>
-              </div>
-              <div className="mb-4">
-                <label htmlFor="description" className="block text-sm font-medium text-gray-700">Description</label>
-                <textarea
-                  id="description"
-                  name="description"
-                  value={editingPokerModeId ? editingPokerMode.description : newPokerMode.description}
-                  onChange={editingPokerModeId ? handleEditTextAreaChange : handleTextAreaChange}
-                  className="mt-1 block w-full border-gray-300 rounded-md shadow-sm"
-                />
-              </div>
-              <div className="flex justify-end">
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-                >
-                  {editingPokerModeId ? 'Update' : 'Create'}
-                </button>
-                <button
-                  type="button"
-                  onClick={cancelEditing}
-                  className="ml-4 px-4 py-2 bg-gray-300 text-black rounded-md hover:bg-gray-400"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
+    <div className="p-6 bg-gray-100 min-h-screen">
+      <div className="max-w-7xl mx-auto space-y-6">
+        
+        {/* Header Section */}
+        <div className="bg-white p-6 rounded-lg shadow-md flex justify-between items-center border-l-4 border-blue-600">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-800">Poker Mode Management</h1>
+            <p className="text-gray-500 text-sm mt-1">Master Game ID: <span className="font-mono bg-gray-100 px-2 py-1 rounded">{pokerId}</span></p>
           </div>
         </div>
-      )}
+
+        {error && (
+          <div className="bg-red-50 text-red-600 p-4 rounded-lg border border-red-200 font-medium">
+            {error}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          
+          {/* Left Column: Mode List */}
+          <div className="lg:col-span-2 space-y-4">
+            <h2 className="text-xl font-bold text-gray-800 border-b pb-2">Active Modes</h2>
+            
+            {loading ? (
+              <div className="flex justify-center py-10">
+                <div className="w-8 h-8 border-t-4 border-blue-600 rounded-full animate-spin"></div>
+              </div>
+            ) : pokerModes.length === 0 ? (
+              <div className="bg-white p-8 rounded-lg shadow-sm text-center text-gray-500 border border-gray-200">
+                No modes created for this game yet.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {pokerModes.map(mode => (
+                  <div key={mode._id} className="bg-white p-5 rounded-lg shadow-sm border border-gray-200 flex flex-col justify-between hover:shadow-md transition-shadow">
+                    <div>
+                      <div className="flex justify-between items-start mb-2">
+                        <span className={`px-2 py-1 rounded text-xs font-bold uppercase tracking-wider ${
+                          mode.mode === 'cash' ? 'bg-green-100 text-green-800' : 'bg-purple-100 text-purple-800'
+                        }`}>
+                          {mode.mode}
+                        </span>
+                        <span className={`px-2 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${
+                          mode.status === 'active' ? 'bg-blue-100 text-blue-800' : 'bg-red-100 text-red-800'
+                        }`}>
+                          {mode.status}
+                        </span>
+                      </div>
+                      
+                      <div className="space-y-1 text-sm text-gray-700 mt-4">
+                        <p className="flex justify-between border-b pb-1"><span>Min Buy-In:</span> <span className="font-semibold">${mode.minBuyIn}</span></p>
+                        <p className="flex justify-between border-b pb-1"><span>Max Buy-In:</span> <span className="font-semibold">${mode.maxBuyIn}</span></p>
+                        <p className="flex justify-between border-b pb-1"><span>Min Players:</span> <span className="font-semibold">{mode.minPlayerCount}</span></p>
+                        <p className="flex justify-between border-b pb-1"><span>Blind Type:</span> <span className="font-semibold uppercase">{mode.bType}</span></p>
+                        {mode.stake !== undefined && <p className="flex justify-between border-b pb-1"><span>Stake:</span> <span className="font-semibold">${mode.stake}</span></p>}
+                      </div>
+                    </div>
+                    
+                    <div className="mt-5 pt-4 border-t flex space-x-2">
+                      <button 
+                        onClick={() => startEditing(mode)} 
+                        className="flex-1 bg-yellow-500 text-white py-1.5 rounded text-sm hover:bg-yellow-600 transition-colors font-medium"
+                      >
+                        Edit
+                      </button>
+                      <button 
+                        onClick={() => handleDelete(mode._id)} 
+                        className="flex-1 bg-red-500 text-white py-1.5 rounded text-sm hover:bg-red-600 transition-colors font-medium"
+                      >
+                        Delete
+                      </button>
+                      <Link 
+                        href={`/admin/pokerDesk/${mode._id}`} 
+                        className="flex-1 bg-blue-600 text-white py-1.5 rounded text-sm text-center hover:bg-blue-700 transition-colors font-medium"
+                      >
+                        Manage Desks
+                      </Link>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Right Column: Form Container */}
+          <div>
+            <div className="bg-white p-6 rounded-lg shadow-md sticky top-6">
+              <h2 className="text-xl font-bold text-gray-800 mb-4 border-b pb-2">
+                {editingPokerModeId ? 'Edit Poker Mode' : 'Create New Mode'}
+              </h2>
+              <form onSubmit={editingPokerModeId ? handleEditSubmit : handleSubmit} className="space-y-4">
+                
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">Mode Type</label>
+                    <select
+                      name="mode"
+                      value={editingPokerModeId ? editingPokerMode.mode || 'cash' : newPokerMode.mode || 'cash'}
+                      onChange={editingPokerModeId ? handleEditChange : handleInputChange}
+                      className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white"
+                    >
+                      <option value="cash">Cash</option>
+                      <option value="practice">Practice</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">Status</label>
+                    <select
+                      name="status"
+                      value={editingPokerModeId ? editingPokerMode.status || 'active' : newPokerMode.status || 'active'}
+                      onChange={editingPokerModeId ? handleEditChange : handleInputChange}
+                      className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white"
+                    >
+                      <option value="active">Active</option>
+                      <option value="disable">Disabled</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">Min Buy-In ($)</label>
+                    <input
+                      type="number"
+                      name="minBuyIn"
+                      value={editingPokerModeId ? editingPokerMode.minBuyIn || 0 : newPokerMode.minBuyIn || 0}
+                      onChange={editingPokerModeId ? handleEditChange : handleInputChange}
+                      required
+                      className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">Max Buy-In ($)</label>
+                    <input
+                      type="number"
+                      name="maxBuyIn"
+                      value={editingPokerModeId ? editingPokerMode.maxBuyIn || 0 : newPokerMode.maxBuyIn || 0}
+                      onChange={editingPokerModeId ? handleEditChange : handleInputChange}
+                      required
+                      className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">Min Players</label>
+                    <input
+                      type="number"
+                      name="minPlayerCount"
+                      value={editingPokerModeId ? editingPokerMode.minPlayerCount || 2 : newPokerMode.minPlayerCount || 2}
+                      onChange={editingPokerModeId ? handleEditChange : handleInputChange}
+                      min="2"
+                      max="10"
+                      required
+                      className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">Blind Type</label>
+                    <select
+                      name="bType"
+                      value={editingPokerModeId ? editingPokerMode.bType || 'blinds' : newPokerMode.bType || 'blinds'}
+                      onChange={editingPokerModeId ? handleEditChange : handleInputChange}
+                      className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white"
+                    >
+                      <option value="blinds">Blinds</option>
+                      <option value="antes">Antes</option>
+                      <option value="both">Both</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">Description (Optional)</label>
+                  <textarea
+                    name="description"
+                    value={editingPokerModeId ? editingPokerMode.description || '' : newPokerMode.description || ''}
+                    onChange={editingPokerModeId ? handleEditChange : handleInputChange}
+                    rows={3}
+                    className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none resize-none"
+                  />
+                </div>
+
+                <div className="pt-4 flex space-x-3">
+                  {editingPokerModeId && (
+                    <button
+                      type="button"
+                      onClick={cancelEditing}
+                      className="flex-1 bg-gray-200 text-gray-800 py-2 rounded hover:bg-gray-300 transition-colors font-bold"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  <button
+                    type="submit"
+                    className="flex-1 bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition-colors font-bold"
+                  >
+                    {editingPokerModeId ? 'Update Mode' : 'Create Mode'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+      </div>
     </div>
   );
-};
-
-export default PokerModeAdmin;
+}

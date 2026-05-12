@@ -1,18 +1,23 @@
-
 /**
  * @fileoverview General utility and helper functions.
  */
 
+import crypto from 'crypto';
+
 /**
- * Generates a 6-digit One-Time Password (OTP).
- * @returns {string} The 6-digit OTP.
+ * Generates a cryptographically secure 6-digit One-Time Password (OTP).
+ * Replaced Math.random() with crypto to prevent predictability vulnerabilities.
+ * 
+ * @returns {string} The secure 6-digit OTP.
  */
 export const generateOtp = (): string => {
-  return Math.floor(100000 + Math.random() * 900000).toString(); 
+  // Generates a random integer between 100000 (inclusive) and 1000000 (exclusive)
+  return crypto.randomInt(100000, 1000000).toString(); 
 };
 
 /**
  * Generates a random stylized gamer tag (e.g., "FierceDragon48291").
+ * 
  * @returns {string} A randomly generated gamer name.
  */
 export const generateGamerName = (): string => {
@@ -30,10 +35,10 @@ export const generateGamerName = (): string => {
     "Wraith", "Cyclone", "Phoenix", "Juggernaut", "Reaper"
   ];
 
-  // Using strict type inference for array access
-  const randomAdjective = adjectives[Math.floor(Math.random() * adjectives.length)];
-  const randomNoun = nouns[Math.floor(Math.random() * nouns.length)];
-  const randomNumber = Math.floor(Math.random() * 100000); 
+  // Using crypto here as well for consistent randomness across the utility
+  const randomAdjective = adjectives[crypto.randomInt(0, adjectives.length)];
+  const randomNoun = nouns[crypto.randomInt(0, nouns.length)];
+  const randomNumber = crypto.randomInt(10000, 100000); 
 
   return `${randomAdjective}${randomNoun}${randomNumber}`;
 };

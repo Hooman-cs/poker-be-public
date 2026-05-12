@@ -1,19 +1,17 @@
-// models/Poker.ts
-import mongoose, { Document, Schema } from 'mongoose';
+/**
+ * @fileoverview Master Poker Database Model
+ * Defines the foundational rules, types, and configurations of poker games available.
+ */
 
-interface IPoker extends Document {
-  name: string; 
-  objective: string;
-  rules: Map<string, string>;
-  description?: string;
-  createdAt: Date;
-  updatedAt: Date;
-  status: 'active' | 'maintenance' | 'disable';
-  gameType: 'NLH' | 'PLO4' | 'PLO5' | 'OmahaHILO' | 'SDH' | 'STUD' | 'RAZZ' | 'PINEAPPLE' | 'COURCHEVEL' | '5CD' | 'BADUGI' | 'MIXED';
-  
-}
+import mongoose, { Document, Schema, Model } from 'mongoose';
+import { IPoker } from '@/utils/pokerModelTypes';
 
-const pokerSchema: Schema = new Schema({
+// 1. Strict Types for the Mongoose Document
+// We omit _id and safely inherit the rest of the sanitized global interface
+export interface IPokerDocument extends Omit<IPoker, '_id'>, Document {}
+
+// 2. Schema Definition
+const pokerSchema = new Schema<IPokerDocument>({
   name: {
     type: String,
     required: true,
@@ -33,6 +31,25 @@ const pokerSchema: Schema = new Schema({
     type: String,
     trim: true,
   },
+  status: {
+    type: String,
+    enum: ['active', 'maintenance', 'disable'],
+    default: 'active',
+  },
+  gameType: {
+    type: String,
+    enum: [
+      'NLH', 'PLO4', 'PLO5', 'OmahaHILO', 'SDH', 'STUD', 
+      'RAZZ', 'PINEAPPLE', 'COURCHEVEL', '5CD', 'BADUGI', 'MIXED'
+    ],
+    default: 'NLH',
+    required: true,
+  },
+  // Reconciled legacy field injected into the schema
+  blindsOrAntes: {
+    type: String,
+    enum: ['blinds', 'antes', 'both'],
+  },
   createdAt: {
     type: Date,
     default: Date.now,
@@ -41,38 +58,15 @@ const pokerSchema: Schema = new Schema({
     type: Date,
     default: Date.now,
   },
-  status: {
-    type: String, // 'active', 'maintenance', or 'notactive'
-    enum: ['active', 'maintenance', 'disable'],
-    default: 'active', // Default to 'active'
-  },
-  gameType: {
-    type: String,
-    enum: [
-      'NLH',       // No Limit Hold'em
-      'PLO4',      // Pot Limit Omaha (4 cards)
-      'PLO5',      // Pot Limit Omaha (5 cards)
-      'OmahaHILO', // High-Low split games (e.g., Omaha Hi-Lo)
-      'SDH',       // Short Deck Hold'em
-      'STUD',      // Seven Card Stud
-      'RAZZ',      // Razz (lowball)
-      'PINEAPPLE', // Pineapple Poker
-      'COURCHEVEL',// Courchevel Poker
-      '5CD',       // Five Card Draw
-      'BADUGI',    // Badugi Poker
-      'MIXED',     // Mixed Games (e.g., H.O.R.S.E)
-    ],
-    default : 'NLH',
-    required: true,
-  },
 });
 
-// Middleware to update the 'updatedAt' field
-pokerSchema.pre<IPoker>('save', function (next) {
-  this.updatedAt = new Date(); // Convert to Date object
+// 3. Pre-save Hook: Auto-update timestamps
+pokerSchema.pre<IPokerDocument>('save', function (next) {
+  this.updatedAt = new Date();
   next();
 });
 
-const Poker = mongoose.models.Poker || mongoose.model<IPoker>('Poker', pokerSchema);
+// 4. Model Export
+const Poker: Model<IPokerDocument> = mongoose.models.Poker || mongoose.model<IPokerDocument>('Poker', pokerSchema);
 
 export default Poker;

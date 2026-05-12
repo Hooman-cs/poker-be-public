@@ -1,42 +1,37 @@
-import Link from 'next/link';
 import { Inter } from 'next/font/google';
-import '../globals.css';
+import '@/app/globals.css'; // Admin-specific global styles (if needed)
 import Sidebar from '../../components/admin/Sidebar';
-import Header from '../../components/admin/header';
+import Header from '../../components/admin/Header'; // Fixed: PascalCase
 
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata = {
   title: 'Admin Panel',
-  description: 'Admin Panel Dashboard',
+  description: 'Enterprise Poker Management Dashboard',
 };
 
-const AdminLayout = ({ children }: { children: React.ReactNode }) => {
+/**
+ * Admin Layout Wrapper
+ * Note: Removed <html> and <body> tags as they are already handled by the Root Layout.
+ */
+export default function AdminLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-    <body className={inter.className}>
-      <div className="flex h-screen bg-gray-100">
-        {/* Sidebar */}
-        <div className=" bg-gray-800 text-white flex-shrink-0">
-          <Sidebar />
-        </div>
-  
-        {/* Main Content */}
-        <div className="flex-1 overflow-y-auto">
-          {/* Header */}
-          <Header />
-  
-          {/* Content Area */}
-          <main className="flex-1 px-6 bg-white" style={{height:"100%"}}>
-            {children}
-          </main>
-        </div>
+    <div className={`flex h-screen bg-gray-100 ${inter.className}`}>
+      {/* Sidebar */}
+      <div className="bg-gray-800 text-white flex-shrink-0">
+        <Sidebar />
       </div>
-    </body>
-  </html>
-  
 
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col overflow-y-auto">
+        {/* Header */}
+        <Header />
+
+        {/* Content Area */}
+        <main className="flex-1 px-6 bg-white pb-6">
+          {children}
+        </main>
+      </div>
+    </div>
   );
-};
-
-export default AdminLayout;
+}

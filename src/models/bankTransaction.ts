@@ -1,21 +1,20 @@
-// bankTransaction.ts (Bank Transaction Model)
-import mongoose, { Schema, Document } from 'mongoose';
-import BankAccount from './bankAccount'; // Import BankAccount model
-import User from './user'
+/**
+ * @fileoverview Bank Transaction Database Model
+ * Records deposit and withdrawal requests linked to a specific Bank Account.
+ */
 
-export interface IBankTransaction extends Document {
-  userId: mongoose.Types.ObjectId; // Reference to User
-  bankId: mongoose.Types.ObjectId; // Reference to BankAccount
-  createdOn: Date;
-  completedOn?: Date;
-  status: 'failed' | 'completed' | 'pending';
-  amount: number;
-  type: 'deposit' | 'withdraw';
-  remark?: string;
-  imageUrl: string; // New imageUrl field
+import mongoose, { Schema, Document, Model } from 'mongoose';
+import { IBankTransaction } from '@/utils/pokerModelTypes';
+
+// 1. Strict Types for the Mongoose Document
+// Omit frontend IDs and enforce strict ObjectIds for relationships
+export interface IBankTransactionDocument extends Omit<IBankTransaction, '_id' | 'userId' | 'bankId'>, Document {
+  userId: mongoose.Types.ObjectId;
+  bankId: mongoose.Types.ObjectId;
 }
 
-const BankTransactionSchema: Schema<IBankTransaction> = new Schema({
+// 2. Schema Definition
+const BankTransactionSchema: Schema<IBankTransactionDocument> = new Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -23,14 +22,14 @@ const BankTransactionSchema: Schema<IBankTransaction> = new Schema({
   },
   bankId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'BankAccount', // Reference to BankAccount model
+    ref: 'BankAccount',
     required: true,
   },
   createdOn: { type: Date, default: Date.now },
   completedOn: { type: Date },
   status: {
     type: String,
-    enum: ['failed', 'completed', 'pending'],
+    enum: ['failed', 'completed', 'pending', 'successful', 'waiting'],
     required: true,
   },
   amount: { type: Number, required: true },
@@ -42,10 +41,12 @@ const BankTransactionSchema: Schema<IBankTransaction> = new Schema({
   remark: { type: String },
   imageUrl: { 
     type: String, 
-    required: true, // Making imageUrl required
+    required: true,
   },
 });
 
-const BankTransaction = mongoose.models.BankTransaction || mongoose.model<IBankTransaction>('BankTransaction', BankTransactionSchema);
+// 3. Model Export
+const BankTransaction: Model<IBankTransactionDocument> = 
+  mongoose.models.BankTransaction || mongoose.model<IBankTransactionDocument>('BankTransaction', BankTransactionSchema);
 
 export default BankTransaction;

@@ -1,21 +1,19 @@
-// models/PokerMode.ts
-import mongoose, { Document, Schema } from 'mongoose';
+/**
+ * @fileoverview Poker Mode Database Model
+ * Defines the rules, stakes, and buy-ins for a specific poker variant.
+ */
 
-// Define the interface for PokerMode
-interface IPokerMode extends Document {
-  pokerId: mongoose.Schema.Types.ObjectId;
-  stake?: number; // Single field for either smallBlind, bigBlind, or anteAmount
-  minBuyIn: number;
-  maxBuyIn: number; 
-  bType: 'blinds' | 'antes' | 'both' ; // To differentiate
-  status: 'active' | 'disable'; // Field for status 
-  createdAt: Date;
-  mode:  'practice' | 'cash';
-  updatedAt: Date;
+import mongoose, { Document, Schema, Model } from 'mongoose';
+import { IPokerMode } from '@/utils/pokerModelTypes';
+
+// 1. Strict Types for the Mongoose Document
+// We omit _id and pokerId to prevent collisions and enforce strict ObjectIds
+export interface IPokerModeDocument extends Omit<IPokerMode, '_id' | 'pokerId'>, Document {
+  pokerId: mongoose.Types.ObjectId;
 }
 
-// Define the schema for PokerMode
-const pokerModeSchema = new Schema<IPokerMode>({
+// 2. Schema Definition
+const pokerModeSchema = new Schema<IPokerModeDocument>({
   pokerId: {
     type: Schema.Types.ObjectId,
     ref: 'Poker',
@@ -39,9 +37,9 @@ const pokerModeSchema = new Schema<IPokerMode>({
     type: Number,
     required: true,
   },
-  bType : {
+  bType: {
     type: String,
-    enum: ['blinds', 'antes'],
+    enum: ['blinds', 'antes', 'both'], // Updated to match global interface
     required: true,
   },
   status: {
@@ -60,12 +58,14 @@ const pokerModeSchema = new Schema<IPokerMode>({
   },
 });
 
-// Update the updatedAt field before saving
-pokerModeSchema.pre<IPokerMode>('save', function (next) {
+// 3. Pre-save Hook: Auto-update timestamps
+pokerModeSchema.pre<IPokerModeDocument>('save', function (next) {
   this.updatedAt = new Date();
   next();
 });
 
-const PokerMode = mongoose.models.Pokermode || mongoose.model<IPokerMode>('Pokermode', pokerModeSchema);
+// 4. Model Export (Standardized casing)
+const PokerMode: Model<IPokerModeDocument> = 
+  mongoose.models.PokerMode || mongoose.model<IPokerModeDocument>('PokerMode', pokerModeSchema);
 
 export default PokerMode;

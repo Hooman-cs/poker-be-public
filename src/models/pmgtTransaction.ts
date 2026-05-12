@@ -1,21 +1,18 @@
-import mongoose, { Document, Schema, Model, model } from 'mongoose';
+/**
+ * @fileoverview Payment Gateway (PMG) Transaction Database Model
+ * Records Razorpay (or other provider) transactions for wallet top-ups.
+ */
 
-// Define the interface for the PMGTransaction schema
-export interface IPMGTransaction extends Document {
-  userId: mongoose.Types.ObjectId; // Reference to the User model
-  orderId?: string; // Razorpay Order ID
-  status: 'created' | 'successful' | 'failed' | 'pending'; // Enum for transaction status
-  amount: number; // Transaction amount
-  currency: string; // Transaction currency, default is INR
-  notes: Record<string, any>; // Additional notes
-  razPayId?: string;
-  razSignature?:string;
-  createdAt: Date; // Timestamp when the transaction was created
-  updatedAt: Date; // Timestamp when the transaction was updated
+import mongoose, { Schema, Document, Model } from 'mongoose';
+import { IPmgTransaction } from '@/utils/pokerModelTypes';
+
+// 1. Strict Types for the Mongoose Document
+export interface IPmgTransactionDocument extends Omit<IPmgTransaction, '_id' | 'userId'>, Document {
+  userId: mongoose.Types.ObjectId;
 }
 
-// Define the schema for PMGTransaction
-const PMGTransactionSchema = new Schema<IPMGTransaction>(
+// 2. Schema Definition
+const PmgTransactionSchema: Schema<IPmgTransactionDocument> = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     orderId: { type: String, default: null },
@@ -29,15 +26,15 @@ const PMGTransactionSchema = new Schema<IPMGTransaction>(
     },
     amount: { type: Number, required: true },
     currency: { type: String, default: 'INR' },
-    notes: { type: Object, default: {} }, 
+    notes: { type: Object, default: {} },
   },
   {
-    timestamps: { createdAt: 'createdAt', updatedAt: 'updatedAt' },
+    timestamps: true, // Automatically manages createdAt and updatedAt
   }
 );
 
-// Export the Mongoose model
-export const PMGTransaction: Model<IPMGTransaction> =
-  mongoose.models.PmgTransaction || model<IPMGTransaction>('PmgTransaction', PMGTransactionSchema);
+// 3. Model Export
+const PmgTransaction: Model<IPmgTransactionDocument> =
+  mongoose.models.PmgTransaction || mongoose.model<IPmgTransactionDocument>('PmgTransaction', PmgTransactionSchema);
 
-export default PMGTransaction;
+export default PmgTransaction;

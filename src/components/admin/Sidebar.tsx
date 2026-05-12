@@ -39,7 +39,7 @@ export default function Sidebar(): JSX.Element {
       <nav className="flex-1">
         <ul className="space-y-4">
           <li>
-            <Link href="/admin/stastics" className="flex items-center space-x-2 hover:bg-gray-700 p-2 rounded transition-colors group">
+            <Link href="/admin/statistics" className="flex items-center space-x-2 hover:bg-gray-700 p-2 rounded transition-colors group">
               <HomeIcon className="h-6 w-6 flex-shrink-0 text-gray-300 group-hover:text-white" />
               {!collapsed && <span className="whitespace-nowrap">Dashboard</span>}
             </Link>

@@ -22,6 +22,6 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts", "src/pages/api/auth/requeastOtp.js", "src/config/dbConnect.js", "src/utils/modelTypes.JS", "src/models/pokerMode.js", "src/models/poker.js", "src/models/pokerDesk.js", "src/models/pokerMode.js", "src/pages/api/admin/auth/login.js", "src/app/page.jsx", "src/pages/api/auth/addBankAcc.js"],
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts", "src/pages/api/auth/requeastOtp.js", "src/config/dbConnect.js", "src/utils/modelTypes.JS", "src/models/pokerMode.js", "src/models/poker.js", "src/models/pokerDesk.js", "src/models/pokerMode.js", "src/pages/api/admin/auth/login.js", "src/app/page.tsx", "src/pages/api/auth/addBankAcc.js"],
   "exclude": ["node_modules"]
 }

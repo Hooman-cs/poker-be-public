@@ -1,14 +1,12 @@
 import mongoose from 'mongoose';
 
-// Seat interface
 export interface ISeat {
   seatNumber: number;
-  userId: mongoose.Types.ObjectId;
+  userId: string | any; // Supports raw string or populated Mongoose object
   buyInAmount: number;
   balanceAtTable: number;
-  status: 'active' | 'disconnected' | 'sittingOut'; // Updated status enum
+  status: 'active' | 'disconnected' | 'sittingOut';
 }
-
 
 export interface IPlayerBets {
   [userId: string]: number;
@@ -79,64 +77,53 @@ export interface ISidePot {
   players: mongoose.Types.ObjectId[];
 }
 
-// PokerGame interface, merged into PokerDesk later
+// PokerDesk interface
+
 export interface IPokerGame {
+  _id?: string;
   players: IPlayer[];
-  currentTurnPlayer: mongoose.Types.ObjectId | null;
+  currentTurnPlayer: string | any | null;
   totalBet: number;
   status: 'waiting' | 'in-progress' | 'finished';
   rounds: IRound[];
   communityCards: ICard[];
-  pots: IPot[] | null; // Updated field
-  createdAt: Date;
-  updatedAt: Date;
-   
-  createGameFromTable(pokerDeskId: mongoose.Types.ObjectId): Promise<void>;
-  dealCards(count: number, cardType?: 'hole' | 'community'): ICard[];
-  getNextActivePlayer(currentUserId: mongoose.Types.ObjectId): mongoose.Types.ObjectId | null;
-  getFirstActivePlayer(): mongoose.Types.ObjectId | null;
-  startNextRound(roundName?: 'pre-flop' | 'flop' | 'turn' | 'river' | 'showdown'): Promise<void>;
-  handlePlayerAction(userId: mongoose.Types.ObjectId, action: PlayerAction, amount?: number): Promise<void>;
-  showdown(): Promise<void>;
-  createPots(): void; // You may want to implement or rename this to reflect the new logic
+  // Change from any[] | null to just any[] to play nicer with Mongoose arrays
+  pots: any[]; 
+  createdAt?: Date | string;
+  updatedAt?: Date | string;
 }
 
-
-// PokerDesk interface
-export interface IPokerTable extends mongoose.Document {
-  pokerModeId: mongoose.Types.ObjectId;
+export interface IPokerTable {
+  _id?: string;
+  pokerModeId: string | any;
   tableName: string;
   maxSeats: number;
   seats: ISeat[];
-  observers: mongoose.Types.ObjectId[];
-  currentGame: IPokerGame;
+  observers: string[] | any[];
+  currentGame: IPokerGame | null;
   currentGameStatus: 'waiting' | 'in-progress' | 'finished';
   totalBuyIns: number;
-  createdAt: Date;
-  updatedAt: Date;
-  stake: number; // Single field for either smallBlind, bigBlind, or anteAmount
+  stake: number;
   minBuyIn: number;
   maxBuyIn: number;
   minPlayerCount: number; 
-  bType: 'blinds' | 'antes' | 'both'; // To differentiate
+  bType: 'blinds' | 'antes' | 'both';
   status: 'active' | 'disable'; 
   gameType: 'NLH' | 'PLO4' | 'PLO5' | 'OmahaHILO' | 'SDH' | 'STUD' | 'RAZZ' | 'PINEAPPLE' | 'COURCHEVEL' | '5CD' | 'BADUGI' | 'MIXED';
-  mode : 'practice' | 'cash';
-  // PokerDesk methods
-  addUserToSeat(userId: mongoose.Types.ObjectId, buyInAmount: number): Promise<ISeat>;
-  userLeavesSeat(userId: mongoose.Types.ObjectId): Promise<number>;
-  addObserver(userId: mongoose.Types.ObjectId): Promise<void>;
-  removeObserver(userId: mongoose.Types.ObjectId): Promise<void>;
-  updateSeatStatus(userId: mongoose.Types.ObjectId, status: 'active' | 'disconnected' | 'sittingOut'): Promise<void>;
-  isUserSeated(userId: mongoose.Types.ObjectId): boolean;
-  addWalletBalance(userId: mongoose.Types.ObjectId, buyInAmount: number): Promise<void>;
+  mode: 'practice' | 'cash';
+  createdAt?: Date | string;
+  updatedAt?: Date | string;
 }
 
 export interface IBankAccount {
+  _id?: string;
+  userId?: string | any; // 'any' allows for Mongoose populated objects or raw ObjectIds
   accountNumber: string;
   bankName: string;
   ifscCode: string;
   accountHolderName: string;
+  isDefault: boolean;
+  status: 'active' | 'blocked' | 'inactive';
 }
 
 export interface IAmountBreakdown {
@@ -149,18 +136,6 @@ export interface IAmountBreakdown {
   total: number;            // Total amount for the transaction
 }
 
-// // Interface for individual wallet transactions
-// export interface IWalletTransaction {
-//   createdOn: Date;                    // Timestamp when transaction was created
-//   completedOn?: Date;                 // Optional completion timestamp
-//   status: 'failed' | 'completed' | 'pending';  // Status of the transaction
-//   amount: IAmountBreakdown;           // Nested breakdown of amounts
-//   type: 'deposit' | 'withdraw' | 'deskIn' | 'deskWithdraw' | 'bonus';  // Type of transaction
-//   remark?: string;                    // Optional remark for the transaction
-//   DeskId?: mongoose.Types.ObjectId;                  // Reference to PokerDesk (if applicable)
-//   BankTransactionId?: mongoose.Types.ObjectId;  
-//   pmgtId?: mongoose.Types.ObjectId;   // Reference to BankTransaction (if applicable)
-// }
 export interface IWalletTransaction {
   createdOn: Date;
   completedOn?: Date;
@@ -181,6 +156,14 @@ export interface IWallet {
   transactions: IWalletTransaction[]; // Array of wallet transactions
 }
 
+export interface ILoginMetaData {
+  ipAddress: string;
+  deviceInfo: string;
+  deviceType?: string;
+  latitude?: number | null;
+  longitude?: number | null;
+}
+
 export interface IUser extends Document {
   mobileNumber: string;
   username: string; 
@@ -196,37 +179,44 @@ export interface IUser extends Document {
   deviceType: string;       // Device type (default to 'android')
   latitude?: number;        // Optional latitude for location
   longitude?: number;       // Optional longitude for location
-  updateLastLogin(req: Request): Promise<void>;
+  // updateLastLogin(req: Request): Promise<void>;
+  // Update this line specifically to use the new meta data interface:
+  updateLastLogin?: (metaData: ILoginMetaData) => Promise<void>;
+  toggleActiveStatus?: () => Promise<void>;
 } 
 
 // -----------------------------------------------------------------------------
-// Global Poker Configurations & Modes
+// Core Game Types
 // -----------------------------------------------------------------------------
 
-// export interface IPoker extends mongoose.Document {
-//   gameType: 'NLH' | 'PLO4' | 'PLO5' | 'OmahaHILO' | 'SDH' | 'STUD' | 'RAZZ' | 'PINEAPPLE' | 'COURCHEVEL' | '5CD' | 'BADUGI' | 'MIXED';
-//   // Add other base poker properties here as needed
-// }
-export interface IPoker extends mongoose.Document {
+export interface IPoker {
+  _id?: string;
   name: string;
   gameType: 'NLH' | 'PLO4' | 'PLO5' | 'OmahaHILO' | 'SDH' | 'STUD' | 'RAZZ' | 'PINEAPPLE' | 'COURCHEVEL' | '5CD' | 'BADUGI' | 'MIXED';
   objective?: string;
-  rules?: string;       // Note: If your rules are stored as an array in the DB, change this to string[]
+  rules?: Record<string, string>; // Type-safe equivalent for Mongoose Map
   description?: string;
-  status: 'active' | 'maintenance' | 'disable'; // Matches the query status checks we wrote
-  blindsOrAntes?: 'blinds' | 'antes' | 'both';  // Carried over from legacy queries
+  status: 'active' | 'maintenance' | 'disable';
+  blindsOrAntes?: 'blinds' | 'antes' | 'both'; 
+  createdAt?: Date | string;
+  updatedAt?: Date | string;
 }
 
-export interface IPokerMode extends mongoose.Document {
-  pokerId: mongoose.Types.ObjectId;
-  stake: number;
+// -----------------------------------------------------------------------------
+// Poker Mode Types
+// -----------------------------------------------------------------------------
+
+export interface IPokerMode {
+  _id?: string;
+  pokerId?: string | any; // 'any' allows for Mongoose populated objects
+  stake: number;          // Strictly required
   minBuyIn: number;
   maxBuyIn: number; 
-  bType: 'blinds' | 'antes' | 'both';
-  status: 'active' | 'disable';
-  createdAt: Date;
+  bType: 'blinds' | 'antes' | 'both'; 
+  status: 'active' | 'disable'; 
   mode: 'practice' | 'cash';
-  updatedAt: Date;
+  createdAt?: Date | string;
+  updatedAt?: Date | string;
 }
 
 // -----------------------------------------------------------------------------
@@ -293,18 +283,109 @@ export interface IGameHistory {
   gameType: string;
 }
 
-export interface IBankTransactionHistory {
-  _id: string;
-  userId?: { 
-    _id: string;
-    username: string;
-  };
+// -----------------------------------------------------------------------------
+// Transaction Types
+// -----------------------------------------------------------------------------
+// IBankTransactionHistory is now represented as IPopulatedBankTransaction for better clarity and consistency with the populated data structure. If you still need a separate interface for the admin dashboard, you can create one that extends or picks from IPopulatedBankTransaction as needed.
+export interface IBankTransaction {
+  _id?: string;
+  userId?: string | any; // 'any' allows for Mongoose populated objects (User)
+  bankId?: string | any; // 'any' allows for Mongoose populated objects (BankAccount)
+  createdOn?: Date | string;
+  completedOn?: Date | string;
+  status: 'failed' | 'completed' | 'pending' | 'successful' | 'waiting';
   amount: number;
   type: 'deposit' | 'withdraw';
-  status: 'waiting' | 'completed' | 'successful' | 'failed' | 'pending';
-  bankId?: { 
-    bankName: string; 
-    accountHolderName: string;
-  };
-  createdAt?: string;
+  remark?: string;
+  imageUrl: string;
+}
+
+export interface IPmgTransaction {
+  _id?: string;
+  userId?: string | any; // 'any' allows for populated User objects
+  orderId?: string | null;
+  status: 'created' | 'successful' | 'failed' | 'pending';
+  amount: number;
+  currency: string;
+  notes: Record<string, any>;
+  razPayId?: string | null;
+  razSignature?: string | null;
+  createdAt?: Date | string;
+  updatedAt?: Date | string;
+}
+
+// -----------------------------------------------------------------------------
+// OTP Types
+// -----------------------------------------------------------------------------
+
+export interface IOtp {
+  mobileNumber: string;
+  otp: string;
+  expiresAt: Date;
+  createdAt: Date;
+  requestCount: number;
+  blockedUntil: Date | null;
+}
+
+export interface IArchivePot {
+  _id?: string;
+  amount: number;
+  contributors: {
+    playerId: string | any; // 'any' supports Mongoose population
+    contribution: number;
+  }[];
+  winners: {
+    playerId: string | any;
+    amount: number;
+  }[];
+  createdAt?: Date | string;
+  updatedAt?: Date | string;
+}
+
+export interface IPokerGameArchive {
+  _id?: string;
+  deskId: string | any;
+  deskName: string;
+  stack: number;
+  mode: 'practice' | 'cash';
+  bType: 'blinds' | 'antes' | 'both';
+  gameType: IPoker['gameType']; // Link it dynamically to the master list
+  players: IPlayer[]; // Assuming IPlayer is already in pokerModelTypes.ts
+  currentTurnPlayer?: string | any | null;
+  totalBet: number;
+  status: 'waiting' | 'in-progress' | 'finished';
+  rounds: IRound[]; // Assuming IRound is already in pokerModelTypes.ts
+  communityCards: {
+    suit: 'hearts' | 'diamonds' | 'clubs' | 'spades';
+    rank: '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 'J' | 'Q' | 'K' | 'A';
+  }[];
+  pots: IArchivePot[];
+  createdAt?: Date | string;
+  updatedAt?: Date | string;
+}
+
+// -----------------------------------------------------------------------------
+// Engine Evaluation Types
+// -----------------------------------------------------------------------------
+
+/**
+ * Represents a Working Pot (WPot) before winners have been evaluated.
+ * Used exclusively as input data for the evaluation engine.
+ */
+export interface WPot {
+  amount: number; 
+  contributors: {
+    playerId: string | any; 
+    contribution: number; 
+  }[];
+}
+
+/**
+ * Represents the final mathematical evaluation of a single player's hand.
+ */
+export interface IPlayerHand {
+  playerId: string | any;
+  hand: string;
+  handRank: number;
+  highCard: number;
 }

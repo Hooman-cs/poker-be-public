@@ -1,39 +1,22 @@
-
 /**
  * @fileoverview Core Poker Pot Calculation Engine
  * Handles main pot and side pot generation, isolating dead money,
  * and resolving all-in scenarios mathematically.
  */
 
+import { IRound, WPot, PlayerAction } from './pokerModelTypes';
+
 // -----------------------------------------------------------------------------
-// Type Definitions
+// Internal Accumulator Types
 // -----------------------------------------------------------------------------
 
-export type PlayerActionType = 'fold' | 'call' | 'raise' | 'all-in' | 'check' | 'bet' | 'small-blind' | 'big-blind';
-
-export interface RoundAction {
-  userId: string;
-  amount: number;
-  action: PlayerActionType;
-}
-
-export interface Round {
-  actions: RoundAction[];
-}
-
+/**
+ * Tracks the running total of a player's bets and their final action.
+ * Kept local as it is only used internally by the pot calculation engine.
+ */
 export interface PlayerBet {
   amount: number;
-  lastAction: PlayerActionType | '';
-}
-
-export interface PotContributor {
-  playerId: string;
-  contribution: number;
-}
-
-export interface Pot {
-  amount: number;
-  contributors: PotContributor[];
+  lastAction: PlayerAction | '';
 }
 
 // -----------------------------------------------------------------------------
@@ -42,7 +25,9 @@ export interface Pot {
 
 /**
  * Normalizes floating-point numbers to prevent JS precision bugs (e.g., 0.1 + 0.2).
- * Rounds to 2 decimal places (cents). If you use lowest-denomination integers, this is a safety net.
+ * Rounds to 2 decimal places (cents).
+ * @param num - The raw floating-point number.
+ * @returns The mathematically sanitized number.
  */
 const sanitizeMath = (num: number): number => {
   return Math.round(num * 100) / 100;
@@ -54,22 +39,25 @@ const sanitizeMath = (num: number): number => {
 
 /**
  * Aggregates all bets across all rounds into a single total per user.
- * * @param {Round[]} rounds - The array of betting rounds.
- * @returns {Record<string, PlayerBet>} Map of user IDs to their total contribution and final status.
+ * 
+ * @param rounds - The array of strictly typed betting rounds.
+ * @returns Map of user IDs (as strings) to their total contribution and final status.
  */
-export const convertRoundsToTotalBets = (rounds: Round[]): Record<string, PlayerBet> => {
+export const convertRoundsToTotalBets = (rounds: IRound[]): Record<string, PlayerBet> => {
   const totalBets: Record<string, PlayerBet> = {};
 
   rounds.forEach((round) => {
     round.actions.forEach((action) => {
-      const { userId, amount, action: playerAction } = action;
+      // Cast ObjectId to string to prevent dictionary key reference bugs
+      const userIdStr = action.userId.toString();
+      const { amount, action: playerAction } = action;
 
-      if (!totalBets[userId]) {
-        totalBets[userId] = { amount: 0, lastAction: '' };
+      if (!totalBets[userIdStr]) {
+        totalBets[userIdStr] = { amount: 0, lastAction: '' };
       }
 
-      totalBets[userId].amount = sanitizeMath(totalBets[userId].amount + amount);
-      totalBets[userId].lastAction = playerAction;
+      totalBets[userIdStr].amount = sanitizeMath(totalBets[userIdStr].amount + amount);
+      totalBets[userIdStr].lastAction = playerAction;
     });
   });
 
@@ -78,11 +66,12 @@ export const convertRoundsToTotalBets = (rounds: Round[]): Record<string, Player
 
 /**
  * Calculates the main pot and side pots correctly based on all-ins and folds.
- * * @param {Round[]} rounds - The array of betting rounds.
- * @returns {Pot[]} An array of generated pots. Index 0 is the main pot, subsequent indexes are side pots.
+ * 
+ * @param rounds - The array of strictly typed betting rounds.
+ * @returns An array of generated working pots (WPot). Index 0 is the main pot.
  */
-export const createPots = (rounds: Round[]): Pot[] => {
-  const pots: Pot[] = [];
+export const createPots = (rounds: IRound[]): WPot[] => {
+  const pots: WPot[] = [];
   const totalBets = convertRoundsToTotalBets(rounds);
 
   while (true) {
@@ -100,7 +89,6 @@ export const createPots = (rounds: Round[]): Pot[] => {
     );
 
     // If there is 1 or 0 active players, any remaining money goes into a final pot
-    // (This handles cases where everyone else folded)
     if (activePlayers.length === 0) break; 
 
     // 3. Find the cap (bounding amount) for the current pot.
@@ -109,7 +97,7 @@ export const createPots = (rounds: Round[]): Pot[] => {
       ...activePlayers.map((player) => totalBets[player].amount)
     );
 
-    const currentPot: Pot = { amount: 0, contributors: [] };
+    const currentPot: WPot = { amount: 0, contributors: [] };
 
     // 4. Extract money from all players for this pot up to the cap
     playersWithMoney.forEach((player) => {
@@ -121,7 +109,7 @@ export const createPots = (rounds: Round[]): Pot[] => {
       if (contribution > 0) {
         currentPot.amount = sanitizeMath(currentPot.amount + contribution);
         currentPot.contributors.push({
-          playerId: player,
+          playerId: player, // Player ID is already a string from Object.keys
           contribution: contribution,
         });
 

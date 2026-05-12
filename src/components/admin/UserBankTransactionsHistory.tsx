@@ -8,7 +8,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { IBankTransactionHistory } from '@/utils/pokerModelTypes';
+import { IBankTransaction } from '@/utils/pokerModelTypes';
 
 // -----------------------------------------------------------------------------
 // Strict Interfaces
@@ -34,8 +34,8 @@ export default function UserBankTransactionsHistory({
   username = '',
 }: UserBankTransactionsHistoryProps): JSX.Element {
   
-  // State Management
-  const [transactions, setTransactions] = useState<IBankTransactionHistory[]>([]);
+  // State Management - Now using the official global IBankTransaction interface
+  const [transactions, setTransactions] = useState<IBankTransaction[]>([]);
   const [page, setPage] = useState<number>(1);
   const [totalPages, setTotalPages] = useState<number>(1);
   const [loading, setLoading] = useState<boolean>(false);
@@ -57,7 +57,6 @@ export default function UserBankTransactionsHistory({
   const fetchTransactions = useCallback(async () => {
     setLoading(true);
     try {
-      // Pointing to the modernized App Router endpoint
       const response = await axios.get('/api/admin/bankTransactions', {
         params: { 
           page, 
@@ -89,16 +88,15 @@ export default function UserBankTransactionsHistory({
   const changeTransactionStatus = async (transactionId: string, newStatus: string) => {
     setUpdatingId(transactionId);
     try {
-      // Pointing to the modernized App Router PATCH endpoint
       await axios.patch(`/api/admin/bankTransactions/${transactionId}/status`, {
         status: newStatus,
       });
 
-      // Optimistically update local state
+      // Optimistically update local state with safe type assertion
       setTransactions((prevTransactions) =>
         prevTransactions.map((transaction) =>
           transaction._id === transactionId
-            ? { ...transaction, status: newStatus as IBankTransactionHistory['status'] }
+            ? { ...transaction, status: newStatus as IBankTransaction['status'] }
             : transaction
         )
       );
@@ -214,9 +212,9 @@ export default function UserBankTransactionsHistory({
                 </td>
               </tr>
             ) : (
-              transactions.map((transaction) => (
-                <tr key={transaction._id} className="hover:bg-gray-50 transition-colors">
-                  {/* Safely fallback if user was deleted */}
+              transactions.map((transaction, index) => (
+                // Use fallback index for key if _id is somehow missing, preventing React key warnings
+                <tr key={transaction._id || `fallback-${index}`} className="hover:bg-gray-50 transition-colors">
                   <td className="py-3 px-6 font-medium text-gray-900">
                     {transaction.userId?.username || <span className="text-gray-400 italic">Unknown User</span>}
                   </td>
@@ -247,12 +245,16 @@ export default function UserBankTransactionsHistory({
                   </td>
                   
                   <td className="py-3 px-6 text-center">
-                    {/* Disable select dropdown if this specific row is updating */}
                     <select
                       className={`text-sm p-1.5 rounded-md border font-medium outline-none transition-colors ${updatingId === transaction._id ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-white border-gray-300 text-gray-700 focus:border-blue-500'}`}
                       value={transaction.status}
                       disabled={updatingId === transaction._id}
-                      onChange={(e) => changeTransactionStatus(transaction._id, e.target.value)}
+                      onChange={(e) => {
+                        // TYPE GUARD: Only execute if _id exists (satisfies strict string requirement)
+                        if (transaction._id) {
+                          changeTransactionStatus(transaction._id, e.target.value);
+                        }
+                      }}
                     >
                       <option value="waiting">Waiting</option>
                       <option value="completed">Completed</option>

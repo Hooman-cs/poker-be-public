@@ -1,23 +1,36 @@
+/**
+ * @fileoverview User Database Model
+ * Encapsulates the user schema, wallet tracking, and user-state methods.
+ */
 
-import { IUser, IWallet, IWalletTransaction, IAmountBreakdown } from '@/utils/pokerModelTypes';
 import mongoose, { Schema, Model, Document } from 'mongoose';
+import { IUser, IWallet, IWalletTransaction, IAmountBreakdown, ILoginMetaData } from '@/utils/pokerModelTypes';
 
-const AmountBreakdownSchema : Schema<IAmountBreakdown> = new Schema({
-  cashAmount: { type: Number, default: 0 }, // Cash portion of the transaction
-  instantBonus: { type: Number, default: 0 }, // Instant bonus portion
-  lockedBonus: { type: Number, default: 0 }, // Locked bonus portion
-  gst: { type: Number, default: 0 }, // GST portion
-  tds: { type: Number, default: 0 }, // TDS deductions
-  otherDeductions: { type: Number, default: 0 }, // Additional deductions, if any
-  total: { type: Number, required: true }, // Total transaction amount
+// Strict Types for the Mongoose Document
+export interface IUserDocument extends IUser, Document {
+  updateLastLogin(metaData: ILoginMetaData): Promise<void>;
+  toggleActiveStatus(): Promise<void>;
+}
+
+// -----------------------------------------------------------------------------
+// Sub-Schemas
+// -----------------------------------------------------------------------------
+
+const AmountBreakdownSchema: Schema<IAmountBreakdown> = new Schema({
+  cashAmount: { type: Number, default: 0 },
+  instantBonus: { type: Number, default: 0 },
+  lockedBonus: { type: Number, default: 0 },
+  gst: { type: Number, default: 0 },
+  tds: { type: Number, default: 0 },
+  otherDeductions: { type: Number, default: 0 },
+  total: { type: Number, required: true },
 });
-
 
 const WalletTransactionSchema: Schema<IWalletTransaction> = new Schema({
   createdOn: { type: Date, default: Date.now },
   completedOn: { type: Date },
   status: { type: String, enum: ['failed', 'completed', 'pending'], required: true },
-  amount: { type: AmountBreakdownSchema, required: true }, // Nested breakdown for amounts
+  amount: { type: AmountBreakdownSchema, required: true },
   type: {
     type: String,
     enum: ['deposit', 'withdraw', 'deskIn', 'deskWithdraw', 'bonus', 'pgDeposit'],
@@ -26,7 +39,7 @@ const WalletTransactionSchema: Schema<IWalletTransaction> = new Schema({
   remark: { type: String },
   DeskId: { type: mongoose.Schema.Types.ObjectId, ref: 'PokerDesk' },
   BankTransactionId: { type: mongoose.Schema.Types.ObjectId, ref: 'BankTransaction' },
-  pmgtId : { type: mongoose.Schema.Types.ObjectId, ref: 'PmgTransaction' },
+  pmgtId: { type: mongoose.Schema.Types.ObjectId, ref: 'PmgTransaction' },
 });
 
 const WalletSchema: Schema<IWallet> = new Schema({
@@ -36,7 +49,11 @@ const WalletSchema: Schema<IWallet> = new Schema({
   transactions: [WalletTransactionSchema],
 });
 
-const UserSchema: Schema<IUser> = new Schema({
+// -----------------------------------------------------------------------------
+// Main User Schema
+// -----------------------------------------------------------------------------
+
+const UserSchema: Schema<IUserDocument> = new Schema({
   mobileNumber: {
     type: String,
     required: true,
@@ -46,13 +63,7 @@ const UserSchema: Schema<IUser> = new Schema({
       message: (props: { value: string }) => `${props.value} is not a valid mobile number!`,
     },
   },
-  username: {
-    type: String,
-    required: true,
-    unique: true,
-    minlength: 3,
-    maxlength: 30,
-  },  
+  username: { type: String, required: true, unique: true, minlength: 3, maxlength: 30 },
   registrationDate: { type: Date, default: Date.now },
   lastLogin: { type: Date, default: Date.now },
   isActive: { type: Boolean, default: true },
@@ -65,19 +76,18 @@ const UserSchema: Schema<IUser> = new Schema({
   longitude: { type: Number },
 });
 
-UserSchema.methods.updateLastLogin = async function (req: any): Promise<void> {
+// -----------------------------------------------------------------------------
+// Instance Methods
+// -----------------------------------------------------------------------------
+
+UserSchema.methods.updateLastLogin = async function (metaData: ILoginMetaData): Promise<void> {
   this.lastLogin = new Date();
-
-  // Access headers directly
-  this.deviceInfo = req.headers['user-agent'] || 'Unknown device'; // Access 'user-agent' directly
-  this.ipAddress = req.headers['x-forwarded-for'] || req.connection?.remoteAddress || 'Unknown IP'; // Access 'x-forwarded-for' directly
-
-  // Assert req.body type to avoid ReadableStream errors
-  const body = req.body as { latitude?: number; longitude?: number; deviceType?: string };
-
-  this.deviceType = body.deviceType || 'android'; // Default to 'android' if not provided
-  this.latitude = body.latitude ?? null; // Use null if latitude is missing
-  this.longitude = body.longitude ?? null; // Use null if longitude is missing
+  this.deviceInfo = metaData.deviceInfo;
+  this.ipAddress = metaData.ipAddress;
+  this.deviceType = metaData.deviceType || 'android';
+  this.latitude = metaData.latitude ?? null;
+  this.longitude = metaData.longitude ?? null;
+  
   await this.save();
 };
 
@@ -86,8 +96,10 @@ UserSchema.methods.toggleActiveStatus = async function (): Promise<void> {
   await this.save();
 };
 
+// -----------------------------------------------------------------------------
+// Model Export
+// -----------------------------------------------------------------------------
 
-const User: Model<IUser> = mongoose.models.User || mongoose.model<IUser>('User', UserSchema);
+const User: Model<IUserDocument> = mongoose.models.User || mongoose.model<IUserDocument>('User', UserSchema);
 
 export default User;
-

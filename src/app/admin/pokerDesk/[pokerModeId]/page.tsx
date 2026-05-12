@@ -1,10 +1,16 @@
 'use client';
-import React, { useState, useEffect } from 'react';
+
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import axios from 'axios';
 import Link from 'next/link';
-import LatestGameHistory from '@/components/admin/latestGameHistory';
 
+// FIXED CASING: PascalCase import required by TypeScript
+import LatestGameHistory from '@/components/admin/LatestGameHistory';
+
+// -----------------------------------------------------------------------------
+// TypeScript Interfaces
+// -----------------------------------------------------------------------------
 interface Seat {
   seatNumber: number;
   userId?: string;
@@ -13,27 +19,6 @@ interface Seat {
   isSittingOut: boolean;
 }
 
-interface TopWinner {
-  userId: string;
-  username: string;
-  totalWinAmount: number;
-  totalBet: number;
-}
-
-interface StatCardProps {
-  title: string;
-  value: string | number;
-}
-
-const StatCard: React.FC<StatCardProps> = ({ title, value }) => (
-  <div className="bg-white rounded-lg shadow-lg p-6 mb-4 w-full">
-    <h2 className="text-lg font-semibold text-gray-800">{title}</h2>
-    <p className="text-xl font-bold text-indigo-600">{value}</p>
-  </div>
-);
-
-
-
 interface PokerDesk {
   _id: string;
   pokerModeId: string;
@@ -41,350 +26,302 @@ interface PokerDesk {
   maxSeats: number;
   seats: Seat[];
   observers: string[];
-  currentGameStatus: 'waiting' | 'in-progress' | 'finished';
+  currentGameStatus: 'waiting' | 'in-progress' | 'finished' | string;
   totalBuyIns: number;
-  createdAt: Date;
-  updatedAt: Date;
+  minBuyIn?: number;
+  maxBuyIn?: number;
 }
 
-const PokerDeskAdmin: React.FC = () => {
-  const params = useParams();
-  const pokerModeId = params?.pokerModeId as string;
+export default function PokerDeskManagement() {
+  const params = useParams<{ pokerModeId: string }>();
+  const pokerModeId = params?.pokerModeId;
+
+  // Data State
   const [pokerDesks, setPokerDesks] = useState<PokerDesk[]>([]);
-  const [newPokerDesk, setNewPokerDesk] = useState<Omit<PokerDesk, '_id' | 'createdAt' | 'updatedAt'>>({
-    pokerModeId,
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Form State
+  const [newPokerDesk, setNewPokerDesk] = useState<Partial<PokerDesk>>({
     tableName: '',
-    maxSeats: 0,
-    seats: [],
-    observers: [],
+    maxSeats: 9,
     currentGameStatus: 'waiting',
-    totalBuyIns: 0
+    totalBuyIns: 0,
   });
-  const [stats, setStats] = useState<any>(null);
-  const [editingPokerDesk, setEditingPokerDesk] = useState<Partial<PokerDesk>>({});
+
+  // Edit State
   const [editingPokerDeskId, setEditingPokerDeskId] = useState<string | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingPokerDesk, setEditingPokerDesk] = useState<Partial<PokerDesk>>({});
 
-  useEffect(() => {
-    if (pokerModeId) {
-      const fetchPokerStats = async () => {
-        try {
-          const response = await axios.get(`/api/admin/auth/getGameData`, {
-            params: { pokerModeId },
-          });
-          console.log(response.data.data);
-          setStats(response.data.data);
-            // Update state with the fetched stats
-        } catch (error) {
-          console.error('Failed to fetch poker stats:', error);
-        }
-      };
-      fetchPokerStats();
-    }
-  }, [pokerModeId]);
-
-
-
-  useEffect(() => {
-    if (pokerModeId) {
-      const fetchPokerDesks = async () => {
-        try {
-          const response = await axios.get(`/api/admin/pokerDesks`, { params: { pokerModeId } });
-          setPokerDesks(response.data);
-        } catch (error) {
-          console.error('Failed to fetch poker desks:', error);
-        }
-      };
-
-      fetchPokerDesks();
-    }
-  }, [pokerModeId]);
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    setNewPokerDesk({ ...newPokerDesk, [e.target.name]: e.target.value });
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newPokerDesk.pokerModeId) {
-      console.error('Poker Mode ID is required');
-      return;
-    }
-
+  const fetchPokerDesks = useCallback(async () => {
+    if (!pokerModeId) return;
+    
+    setLoading(true);
+    setError(null);
     try {
-      const response = await fetch('/api/admin/pokerDesks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newPokerDesk),
+      // API MIGRATION: Fetch Desks by Mode ID
+      const response = await axios.get('/api/admin/pokerDesks', {
+        params: { pokerModeId }
       });
-      if (!response.ok) throw new Error('Network response was not ok');
-      const data = await response.json();
-      setPokerDesks([...pokerDesks, { ...newPokerDesk, _id: data._id } as PokerDesk]);
-      setNewPokerDesk({
-        pokerModeId: pokerModeId || '',
-        tableName: '',
-        maxSeats: 0,
-        seats: [],
-        observers: [],
-        currentGameStatus: 'waiting',
-        totalBuyIns: 0
-      });
-      setIsModalOpen(false);
-    } catch (error) {
-      console.error('Failed to create poker desk:', error);
+      setPokerDesks(response.data.data || response.data);
+    } catch (err) {
+      console.error('Error fetching poker desks:', err);
+      setError('Failed to fetch poker desks.');
+    } finally {
+      setLoading(false);
     }
-  };
+  }, [pokerModeId]);
 
-  const startEditing = (pokerDesk: PokerDesk) => {
-    setEditingPokerDesk(pokerDesk);
-    setEditingPokerDeskId(pokerDesk._id);
-    setIsModalOpen(true);
+  useEffect(() => {
+    fetchPokerDesks();
+  }, [fetchPokerDesks]);
+
+  // -----------------------------------------------------------------------------
+  // Form Handlers
+  // -----------------------------------------------------------------------------
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    const { name, value } = e.target;
+    setNewPokerDesk(prev => ({ ...prev, [name]: value }));
   };
 
   const handleEditChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    setEditingPokerDesk({ ...editingPokerDesk, [e.target.name]: e.target.value });
+    const { name, value } = e.target;
+    setEditingPokerDesk(prev => ({ ...prev, [name]: value }));
   };
 
-  const handleUpdate = async (e: React.FormEvent) => {
+  // -----------------------------------------------------------------------------
+  // CRUD Operations
+  // -----------------------------------------------------------------------------
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pokerModeId) return;
+
+    try {
+      // API MIGRATION: Create Desk
+      await axios.post('/api/admin/pokerDesks', {
+        ...newPokerDesk,
+        pokerModeId,
+      });
+      
+      setNewPokerDesk({ tableName: '', maxSeats: 9, currentGameStatus: 'waiting', totalBuyIns: 0 });
+      fetchPokerDesks();
+    } catch (error) {
+      console.error('Error creating poker desk:', error);
+      alert('Failed to create poker desk.');
+    }
+  };
+
+  const startEditing = (desk: PokerDesk) => {
+    setEditingPokerDeskId(desk._id);
+    setEditingPokerDesk({ ...desk });
+  };
+
+  const cancelEditing = () => {
+    setEditingPokerDeskId(null);
+    setEditingPokerDesk({});
+  };
+
+  const handleEditSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingPokerDeskId) return;
 
     try {
-      const response = await fetch(`/api/admin/pokerDesks/${editingPokerDeskId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editingPokerDesk),
-      });
-      if (!response.ok) throw new Error('Network response was not ok');
-      setPokerDesks(pokerDesks.map((p) => (p._id === editingPokerDeskId ? { ...editingPokerDesk, _id: editingPokerDeskId } as PokerDesk : p)));
-      setEditingPokerDesk({});
-      setEditingPokerDeskId(null);
-      setIsModalOpen(false);
+      // API MIGRATION: Modern PUT requests target the specific ID path
+      await axios.put(`/api/admin/pokerDesks/${editingPokerDeskId}`, editingPokerDesk);
+      cancelEditing();
+      fetchPokerDesks();
     } catch (error) {
-      console.error('Failed to update poker desk:', error);
+      console.error('Error updating poker desk:', error);
+      alert('Failed to update poker desk.');
     }
   };
 
   const handleDelete = async (id: string) => {
+    if (!window.confirm("Are you sure you want to delete this desk? All active games will be disrupted.")) return;
+
     try {
-      const response = await fetch(`/api/admin/pokerDesks/${id}`, { method: 'DELETE' });
-      if (!response.ok) throw new Error('Network response was not ok');
-      setPokerDesks(pokerDesks.filter((pokerDesk) => pokerDesk._id !== id));
+      // API MIGRATION: Modern DELETE requests target the specific ID path
+      await axios.delete(`/api/admin/pokerDesks/${id}`);
+      fetchPokerDesks();
     } catch (error) {
-      console.error('Failed to delete poker desk:', error);
+      console.error('Error deleting poker desk:', error);
+      alert('Failed to delete poker desk.');
     }
   };
 
-  const cancelEditing = () => {
-    setEditingPokerDesk({});
-    setEditingPokerDeskId(null);
-    setIsModalOpen(false);
-  };
-
+  // -----------------------------------------------------------------------------
+  // Render
+  // -----------------------------------------------------------------------------
   return (
-    <div className="container mx-auto px-4 pb-4 overflow-auto" style={{maxHeight:'90vh', overflow:'scroll'}}>
-<div className="flex justify-between items-center bg-gradient-to-r  from-blue-500 to-purple-600 p-4 rounded-lg shadow-lg">
-  <h1 className="text-2xl font-bold text-white">
-    Poker Desk
-  </h1>
-
-  {/* Button to open the modal */}
-  <button
-    onClick={() => setIsModalOpen(true)}
-    className="px-6 py-3 bg-yellow-500 text-white rounded-md hover:bg-yellow-600 transition duration-300 ease-in-out transform hover:scale-105"
-  >
-    Create Poker Desk
-  </button>
-</div>
-
-
-   <div className="container mx-auto px-4 pb-4">
-      {/* <div className="flex justify-between items-center bg-gradient-to-r from-blue-500 to-purple-600 p-4 rounded-lg shadow-lg">
-        <h1 className="text-2xl font-bold text-white">Poker Mode Stats</h1>
-      </div> */}
-
-      {/* Display the stat cards */}
-      <div className="flex flex-wrap justify-start mt-6">
+    <div className="p-6 bg-gray-100 min-h-screen">
+      <div className="max-w-7xl mx-auto space-y-6">
         
-      {stats && (
-  <>
-    {/* Overall Stats */}
-    <div className='container flex justify-center items-center'>
-  <div className="flex gap-4">
-    <StatCard title="Total Games Played" value={stats.totalGames} />
-    <StatCard title="Total Bet Amount" value={`$${stats.totalBet}`} />
-  </div>
-</div>
-
-
-    {/* Top Winners Dropdown */}
-    <div className="w-full md:w-1/2 p-4">
-      <h2 className="text-xl font-semibold mb-2 text-gray-800">Top Winners</h2>
-      <div className="bg-gray-50 rounded-lg shadow-lg p-4 mb-4">
-        <details className="group">
-          <summary className="text-lg font-semibold text-gray-700 cursor-pointer">Show Top Winners</summary>
-          <div className="mt-2">
-            {stats.topWinners && stats.topWinners.map((winner: TopWinner) => (
-              <div key={winner.userId} className="bg-gray-100 rounded-lg p-4 mb-4">
-                <p className="text-sm text-gray-700">Username: {winner.username}</p>
-                <p className="text-sm text-gray-700">Total Win: ${winner.totalWinAmount}</p>
-                <p className="text-sm text-gray-700">Total Bet: ${winner.totalBet}</p>
-              </div>
-            ))}
-          </div>
-        </details>
-      </div>
-    </div>
-
-    {/* Top Contributors Dropdown */}
-    <div className="w-full md:w-1/2 p-4">
-      <h2 className="text-xl font-semibold mb-2 text-gray-800">Top Contributors</h2>
-      <div className="bg-gray-50 rounded-lg shadow-lg p-4 mb-4">
-        <details className="group">
-          <summary className="text-lg font-semibold text-gray-700 cursor-pointer">Show Top Contributors</summary>
-          <div className="mt-2">
-            {stats.topContributors && stats.topContributors.map((contributor: any) => (
-              <div key={contributor.userId} className="bg-gray-100 rounded-lg p-4 mb-4">
-                <p className="text-sm text-gray-700">Username: {contributor.username}</p>
-                <p className="text-sm text-gray-700">Total Contributed: ${contributor.totalContributed}</p>
-                <p className="text-sm text-gray-700">Total Bet: ${contributor.totalBet}</p>
-              </div>
-            ))}
-          </div>
-        </details>
-      </div>
-    </div>
-
-    {/* Win Rate Stats */}
-     
-  </>
-)}
-
-      </div>
-    </div>
-
-      <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Table Name</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Max Seats</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Current Game Status</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Buy-Ins</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {pokerDesks.map((pokerDesk) => (
-              <tr key={pokerDesk._id}>
-                <td className="px-6 py-4 whitespace-nowrap">{pokerDesk.tableName}</td>
-                <td className="px-6 py-4 whitespace-nowrap">{pokerDesk.maxSeats}</td>
-                <td className="px-6 py-4 whitespace-nowrap">{pokerDesk.currentGameStatus}</td>
-                <td className="px-6 py-4 whitespace-nowrap">{pokerDesk.totalBuyIns}</td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <button
-                    onClick={() => startEditing(pokerDesk)}
-                    className="px-2 py-1 bg-yellow-500 text-white rounded-md hover:bg-yellow-600"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => handleDelete(pokerDesk._id)}
-                    className="ml-2 px-2 py-1 bg-red-600 text-white rounded-md hover:bg-red-700"
-                  >
-                    Delete
-                  </button>
-                  <Link href={`/admin/pokerDesk/details/${pokerDesk._id}`}>
-                   <button className=" ml-2 px-2 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700">
-                      Details
-                       </button>
-                    </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {isModalOpen && (
-        <div className="fixed inset-0 flex items-center justify-center z-50 bg-gray-900 bg-opacity-50">
-          <div className="bg-white p-6 rounded-lg shadow-lg w-full max-w-lg">
-            <h2 className="text-lg font-bold mb-4">{editingPokerDeskId ? 'Edit Poker Desk' : 'Create Poker Desk'}</h2>
-            <form onSubmit={editingPokerDeskId ? handleUpdate : handleSubmit}>
-              <div className="mb-4">
-                <label htmlFor="pokerModeId" className="block text-sm font-medium text-gray-700">Poker Mode ID</label>
-                <p className="mt-1 text-sm text-gray-500">{pokerModeId}</p>
-              </div>
-              <div className="mb-4">
-                <label htmlFor="tableName" className="block text-sm font-medium text-gray-700">Table Name</label>
-                <input
-                  id="tableName"
-                  name="tableName"
-                  type="text"
-                  value={editingPokerDeskId ? editingPokerDesk.tableName : newPokerDesk.tableName}
-                  onChange={editingPokerDeskId ? handleEditChange : handleChange}
-                  className="mt-1 block w-full border-gray-300 rounded-md shadow-sm"
-                />
-              </div>
-              <div className="mb-4">
-                <label htmlFor="maxSeats" className="block text-sm font-medium text-gray-700">Max Seats</label>
-                <input
-                  id="maxSeats"
-                  name="maxSeats"
-                  type="number"
-                  value={editingPokerDeskId ? editingPokerDesk.maxSeats : newPokerDesk.maxSeats}
-                  onChange={editingPokerDeskId ? handleEditChange : handleChange}
-                  className="mt-1 block w-full border-gray-300 rounded-md shadow-sm"
-                />
-              </div>
-              <div className="mb-4">
-                <label htmlFor="currentGameStatus" className="block text-sm font-medium text-gray-700">Current Game Status</label>
-                <select
-                  id="currentGameStatus"
-                  name="currentGameStatus"
-                  value={editingPokerDeskId ? editingPokerDesk.currentGameStatus : newPokerDesk.currentGameStatus}
-                  onChange={editingPokerDeskId ? handleEditChange : handleChange}
-                  className="mt-1 block w-full border-gray-300 rounded-md shadow-sm"
-                >
-                  <option value="waiting">Waiting</option>
-                  <option value="in-progress">In Progress</option>
-                  <option value="finished">Finished</option>
-                </select>
-              </div>
-              <div className="mb-4">
-                <label htmlFor="totalBuyIns" className="block text-sm font-medium text-gray-700">Total Buy-Ins</label>
-                <input
-                  id="totalBuyIns"
-                  name="totalBuyIns"
-                  type="number"
-                  value={editingPokerDeskId ? editingPokerDesk.totalBuyIns : newPokerDesk.totalBuyIns}
-                  onChange={editingPokerDeskId ? handleEditChange : handleChange}
-                  className="mt-1 block w-full border-gray-300 rounded-md shadow-sm"
-                />
-              </div>
-              <div className="flex justify-end space-x-4">
-                <button
-                  type="button"
-                  onClick={cancelEditing}
-                  className="px-4 py-2 bg-gray-300 text-gray-800 rounded-md hover:bg-gray-400"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-                >
-                  {editingPokerDeskId ? 'Update' : 'Create'}
-                </button>
-              </div>
-            </form>
+        {/* Header Section */}
+        <div className="bg-white p-6 rounded-lg shadow-md flex justify-between items-center">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-800">Poker Desk Management</h1>
+            <p className="text-gray-500 text-sm mt-1">Mode ID: <span className="font-mono">{pokerModeId}</span></p>
           </div>
         </div>
-      )}
 
-    { pokerModeId &&  <LatestGameHistory pokerModeId={pokerModeId} />}
+        {error && (
+          <div className="bg-red-50 text-red-600 p-4 rounded-lg border border-red-200 font-medium">
+            {error}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          
+          {/* Left Column: Desk List */}
+          <div className="lg:col-span-2 space-y-4">
+            <h2 className="text-xl font-bold text-gray-800 border-b pb-2">Active Desks</h2>
+            
+            {loading ? (
+              <div className="flex justify-center py-10">
+                <div className="w-8 h-8 border-t-4 border-blue-600 rounded-full animate-spin"></div>
+              </div>
+            ) : pokerDesks.length === 0 ? (
+              <div className="bg-white p-8 rounded-lg shadow-sm text-center text-gray-500 border border-gray-200">
+                No desks created for this mode yet.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {pokerDesks.map(desk => (
+                  <div key={desk._id} className="bg-white p-5 rounded-lg shadow-sm border border-gray-200 flex flex-col justify-between">
+                    <div>
+                      <h3 className="text-lg font-bold text-gray-800">{desk.tableName}</h3>
+                      <div className="mt-2 space-y-1 text-sm text-gray-600">
+                        <p>Max Seats: <span className="font-semibold text-gray-900">{desk.maxSeats}</span></p>
+                        <p>Total Buy-Ins: <span className="font-semibold text-green-600">${desk.totalBuyIns}</span></p>
+                        <p>Status: 
+                          <span className={`ml-2 px-2 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
+                            desk.currentGameStatus === 'in-progress' ? 'bg-green-100 text-green-800' :
+                            desk.currentGameStatus === 'waiting' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-gray-100 text-gray-800'
+                          }`}>
+                            {desk.currentGameStatus}
+                          </span>
+                        </p>
+                      </div>
+                    </div>
+                    
+                    <div className="mt-4 pt-4 border-t flex space-x-2">
+                      <button 
+                        onClick={() => startEditing(desk)} 
+                        className="flex-1 bg-yellow-500 text-white py-1.5 rounded text-sm hover:bg-yellow-600 transition-colors"
+                      >
+                        Edit
+                      </button>
+                      <button 
+                        onClick={() => handleDelete(desk._id)} 
+                        className="flex-1 bg-red-500 text-white py-1.5 rounded text-sm hover:bg-red-600 transition-colors"
+                      >
+                        Delete
+                      </button>
+                      <Link 
+                        href={`/admin/pokerDesk/details/${desk._id}`} 
+                        className="flex-1 bg-blue-600 text-white py-1.5 rounded text-sm text-center hover:bg-blue-700 transition-colors"
+                      >
+                        View Details
+                      </Link>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Right Column: Form Container */}
+          <div>
+            <div className="bg-white p-6 rounded-lg shadow-md sticky top-6">
+              <h2 className="text-xl font-bold text-gray-800 mb-4">
+                {editingPokerDeskId ? 'Edit Desk' : 'Create New Desk'}
+              </h2>
+              <form onSubmit={editingPokerDeskId ? handleEditSubmit : handleSubmit} className="space-y-4">
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Table Name</label>
+                  <input
+                    type="text"
+                    name="tableName"
+                    value={editingPokerDeskId ? editingPokerDesk.tableName || '' : newPokerDesk.tableName || ''}
+                    onChange={editingPokerDeskId ? handleEditChange : handleChange}
+                    required
+                    className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Max Seats</label>
+                  <input
+                    type="number"
+                    name="maxSeats"
+                    value={editingPokerDeskId ? editingPokerDesk.maxSeats || 9 : newPokerDesk.maxSeats || 9}
+                    onChange={editingPokerDeskId ? handleEditChange : handleChange}
+                    min="2"
+                    max="10"
+                    required
+                    className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Current Status</label>
+                  <select
+                    name="currentGameStatus"
+                    value={editingPokerDeskId ? editingPokerDesk.currentGameStatus || 'waiting' : newPokerDesk.currentGameStatus || 'waiting'}
+                    onChange={editingPokerDeskId ? handleEditChange : handleChange}
+                    className="w-full px-3 py-2 border border-gray-300 rounded bg-white focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="waiting">Waiting</option>
+                    <option value="in-progress">In Progress</option>
+                    <option value="finished">Finished</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Total Buy-Ins ($)</label>
+                  <input
+                    type="number"
+                    name="totalBuyIns"
+                    value={editingPokerDeskId ? editingPokerDesk.totalBuyIns || 0 : newPokerDesk.totalBuyIns || 0}
+                    onChange={editingPokerDeskId ? handleEditChange : handleChange}
+                    min="0"
+                    className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+
+                <div className="pt-2 flex space-x-3">
+                  {editingPokerDeskId && (
+                    <button
+                      type="button"
+                      onClick={cancelEditing}
+                      className="flex-1 bg-gray-200 text-gray-800 py-2 rounded hover:bg-gray-300 transition-colors font-medium"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  <button
+                    type="submit"
+                    className="flex-1 bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition-colors font-medium"
+                  >
+                    {editingPokerDeskId ? 'Update Desk' : 'Create Desk'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        {/* Global Game History matching this Mode */}
+        {pokerModeId && (
+          <div className="bg-white p-6 rounded-lg shadow-md mt-6">
+            <h2 className="text-xl font-bold text-gray-800 mb-4 border-b pb-2">Recent Games (Mode Level)</h2>
+            <LatestGameHistory pokerModeId={pokerModeId} />
+          </div>
+        )}
+
+      </div>
     </div>
   );
-};
-
-export default PokerDeskAdmin;
+}

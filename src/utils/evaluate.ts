@@ -1,27 +1,69 @@
-import { ICard, IPlayer, IPlayerHand, IPot, WPot } from '../utils/pokerTypes';
+/**
+ * @fileoverview Poker hand evaluation engine.
+ * Contains algorithmic logic for determining hand strength and distributing pots.
+ */
 
-// Helper functions
-const getRankIndex = (rank: string): number => '23456789TJQKA'.indexOf(rank);
+import { ICard, IPlayer, IPot, WPot, IPlayerHand } from './pokerModelTypes'; 
 
+// -----------------------------------------------------------------------------
+// Core Hand Evaluation Helpers
+// -----------------------------------------------------------------------------
+
+// FIX: Array map prevents the string parsing bug where '10' returns -1
+const RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+
+/**
+ * Gets the mathematical index of a card rank for evaluation comparisons.
+ * @param rank - The rank of the card (e.g., '10', 'A')
+ * @returns The mathematical index of the rank
+ */
+const getRankIndex = (rank: string): number => RANKS.indexOf(rank);
+
+/**
+ * Counts the occurrences of each rank in a given set of cards.
+ * @param cards - Array of cards to count
+ * @returns A record mapping card ranks to their count
+ */
 const countRanks = (cards: ICard[]): Record<string, number> =>
   cards.reduce((acc, card) => {
     acc[card.rank] = (acc[card.rank] || 0) + 1;
     return acc;
   }, {} as Record<string, number>);
 
+/**
+ * Determines if all given cards share the same suit.
+ * @param cards - Array of cards to check
+ * @returns True if all cards are of the same suit
+ */
 const isFlush = (cards: ICard[]): boolean => {
-  const suits = cards.map(card => card.suit);
-  return suits.every(suit => suit === suits[0]);
+  if (cards.length === 0) return false;
+  const firstSuit = cards[0].suit;
+  return cards.every(card => card.suit === firstSuit);
 };
 
+/**
+ * Determines if the given cards form a sequential straight.
+ * @param cards - Array of cards to check
+ * @returns True if the cards form a straight
+ */
 const isStraight = (cards: ICard[]): boolean => {
   const ranks = cards.map(card => getRankIndex(card.rank)).sort((a, b) => a - b);
   const uniqueRanks = Array.from(new Set(ranks));
-  if (uniqueRanks.length === 5 && uniqueRanks[4] - uniqueRanks[0] === 4) return true;
-  return uniqueRanks.toString() === '0,1,2,3,12'; // Ace-low straight
+  
+  if (uniqueRanks.length >= 5) {
+    if (uniqueRanks[4] - uniqueRanks[0] === 4) return true;
+    // Ace-low straight check (A, 2, 3, 4, 5 maps to indices 12, 0, 1, 2, 3)
+    if (uniqueRanks.join(',') === '0,1,2,3,12') return true;
+  }
+  return false;
 };
 
-// Generate all combinations of `k` cards from a given array
+/**
+ * Generates all mathematical combinations of `k` cards from a given array.
+ * @param cards - The pool of available cards
+ * @param k - The number of cards to choose
+ * @returns An array of card combinations
+ */
 const generateCombinations = (cards: ICard[], k: number): ICard[][] => {
   if (k === 0) return [[]];
   if (cards.length === 0) return [];
@@ -31,7 +73,15 @@ const generateCombinations = (cards: ICard[], k: number): ICard[][] => {
   return [...withFirst, ...withoutFirst];
 };
 
-// Get hand ranking
+// -----------------------------------------------------------------------------
+// Hand Ranking Engine
+// -----------------------------------------------------------------------------
+
+/**
+ * Evaluates a strict 5-card array and returns its mathematical rank and high card.
+ * @param cards - Exactly 5 cards to evaluate
+ * @returns The hand ranking details
+ */
 export const getHandRanking = (cards: ICard[]): { hand: string; rank: number; highCard: number } => {
   const rankCount = countRanks(cards);
   const counts = Object.values(rankCount).sort((a, b) => b - a);
@@ -53,8 +103,15 @@ export const getHandRanking = (cards: ICard[]): { hand: string; rank: number; hi
   return { hand: 'high-card', rank: 1, highCard: highestCard };
 };
 
-// Helper for PLO-style hand evaluation (e.g., PLO4, PLO5)
-const getBestFiveCardHandFromCombinations = (holeCards: ICard[], communityCards: ICard[], requiredHoleCards: number) => {
+// -----------------------------------------------------------------------------
+// Game Type Specific Evaluators
+// -----------------------------------------------------------------------------
+
+/**
+ * Helper for PLO-style hand evaluation.
+ * Enforces the rule that players MUST use exactly X hole cards and Y community cards.
+ */
+const getBestPLOHand = (holeCards: ICard[], communityCards: ICard[], requiredHoleCards: number) => {
   const combinations = generateCombinations(holeCards, requiredHoleCards)
     .flatMap(holeCombo =>
       generateCombinations(communityCards, 5 - requiredHoleCards)
@@ -67,29 +124,54 @@ const getBestFiveCardHandFromCombinations = (holeCards: ICard[], communityCards:
   }, { hand: '', rank: 0, highCard: 0 });
 };
 
-// Evaluate hands for each player with game type logic
+/**
+ * Helper for Texas Hold'em (NLH) hand evaluation.
+ * Evaluates the absolute best 5-card combination from all 7 available cards.
+ */
+const getBestNLHHand = (holeCards: ICard[], communityCards: ICard[]) => {
+  const allCards = [...holeCards, ...communityCards];
+  const combinations = generateCombinations(allCards, 5);
+
+  return combinations.reduce((best, current) => {
+    const hand = getHandRanking(current);
+    return hand.rank > best.rank || (hand.rank === best.rank && hand.highCard > best.highCard) ? hand : best;
+  }, { hand: '', rank: 0, highCard: 0 });
+};
+
+// -----------------------------------------------------------------------------
+// Main Evaluation Exports
+// -----------------------------------------------------------------------------
+
+/**
+ * Evaluates the best possible hand for all players based on the active game type.
+ * @param players - Array of players with their hole cards
+ * @param communityCards - Array of community cards on the board
+ * @param gameType - The type of poker game (e.g., 'NLH', 'PLO4')
+ * @returns Array of evaluated player hands
+ */
 export const evaluateHands = (players: IPlayer[], communityCards: ICard[], gameType: string): IPlayerHand[] => {
   return players.map(player => {
     if (player.status === 'folded') {
       return { playerId: player.userId, hand: 'folded', handRank: 0, highCard: 0 };
     }
 
-    const allCards = [...player.holeCards, ...communityCards];
     let bestHand;
 
     switch (gameType) {
-      case 'NLH': // No Limit Hold'em
-        bestHand = getBestFiveCardHandFromCombinations(player.holeCards, communityCards, 2);
+      case 'NLH': 
+        bestHand = getBestNLHHand(player.holeCards, communityCards);
         break;
-      case 'PLO4': // Pot Limit Omaha (4 cards)
-        bestHand = getBestFiveCardHandFromCombinations(player.holeCards.slice(0, 4), communityCards, 2);
+      case 'PLO4': 
+        bestHand = getBestPLOHand(player.holeCards.slice(0, 4), communityCards, 2);
         break;
-      case 'PLO5': // Pot Limit Omaha (5 cards)
-        bestHand = getBestFiveCardHandFromCombinations(player.holeCards.slice(0, 5), communityCards, 2);
+      case 'PLO5': 
+        bestHand = getBestPLOHand(player.holeCards.slice(0, 5), communityCards, 2);
         break;
-      // Add more game types here
       default:
-        throw new Error(`Unsupported game type: ${gameType}`);
+        // Fail-safe gracefully falls back to NLH if an unknown mode is passed
+        console.warn(`[Game Engine]: Unsupported game type ${gameType}. Defaulting to NLH rules.`);
+        bestHand = getBestNLHHand(player.holeCards, communityCards);
+        break;
     }
 
     return {
@@ -101,14 +183,21 @@ export const evaluateHands = (players: IPlayer[], communityCards: ICard[], gameT
   });
 };
 
-// Evaluate pots and determine winners
+/**
+ * Iterates through all pots (main and side) and distributes winners mathematically.
+ * @param players - Array of players
+ * @param communityCards - Array of community cards on the board
+ * @param pots - Array of working pots (WPot) to evaluate
+ * @param gameType - The type of poker game
+ * @returns Array of finalized pots (IPot) with winner distributions
+ */
 export const evaluatePots = (players: IPlayer[], communityCards: ICard[], pots: WPot[], gameType: string): IPot[] => {
   const playerHands = evaluateHands(players, communityCards, gameType);
 
   return pots.map(pot => {
     const eligibleHands = playerHands.filter(hand =>
-      pot.contributors.some(contributor =>
-        contributor.playerId === hand.playerId.toString() && hand.hand !== 'folded'
+      pot.contributors.some((contributor) =>
+        contributor.playerId.toString() === hand.playerId.toString() && hand.hand !== 'folded'
       )
     );
 

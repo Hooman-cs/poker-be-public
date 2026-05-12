@@ -1,17 +1,20 @@
-// bankAccount.ts (Bank Account Model)
-import mongoose, { Schema, Document } from 'mongoose';
+/**
+ * @fileoverview Bank Account Database Model
+ * Stores user bank details securely for withdrawals.
+ */
 
-export interface IBankAccount extends Document {
-  userId: mongoose.Types.ObjectId; // Reference to User
-  accountNumber: string;
-  bankName: string;
-  ifscCode: string;
-  accountHolderName: string;
-  isDefault: boolean; // New isDefault field
-  status: 'active' | 'blocked' | 'inactive'; // New status field
+import mongoose, { Schema, Document, Model } from 'mongoose';
+import { IBankAccount } from '@/utils/pokerModelTypes';
+
+// 1. Strict Types for the Mongoose Document
+// We Omit '_id' (to prevent collision with Mongoose's ObjectId) and 'userId' 
+// (so we can strictly enforce it as a Mongoose ObjectId at the database level).
+export interface IBankAccountDocument extends Omit<IBankAccount, '_id' | 'userId'>, Document {
+  userId: mongoose.Types.ObjectId;
 }
 
-const BankAccountSchema: Schema<IBankAccount> = new Schema({
+// 2. Schema Definition
+const BankAccountSchema: Schema<IBankAccountDocument> = new Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -23,17 +26,19 @@ const BankAccountSchema: Schema<IBankAccount> = new Schema({
   accountHolderName: { type: String, required: true },
   isDefault: { 
     type: Boolean, 
-    default: false, // Default to false
+    default: false,
     required: true 
   },
   status: {
     type: String,
     enum: ['active', 'blocked', 'inactive'],
-    default: 'active', // Default to 'active'
+    default: 'active',
     required: true,
   },
 });
 
-const BankAccount = mongoose.models.BankAccount || mongoose.model<IBankAccount>('BankAccount', BankAccountSchema);
+// 3. Model Export
+const BankAccount: Model<IBankAccountDocument> = 
+  mongoose.models.BankAccount || mongoose.model<IBankAccountDocument>('BankAccount', BankAccountSchema);
 
 export default BankAccount;
