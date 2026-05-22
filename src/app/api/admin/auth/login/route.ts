@@ -42,13 +42,15 @@ export async function POST(request: NextRequest) {
     const token = jwt.sign(
       { userId: admin._id, role: admin.role },
       JWT_SECRET,
-      { expiresIn: '1h' }
+      { expiresIn: '6h' }
     );
 
     // 4. Update Admin State
-    admin.token = token;
-    admin.lastLogin = new Date();
-    await admin.save();
+    // admin.token = token;
+    // admin.lastLogin = new Date();
+    // lastLogin still needs saving though, so change to:
+    await Admin.findByIdAndUpdate(admin._id, { lastLogin: new Date() });
+    // await admin.save();
 
     // 5. Assign Secure HTTP-Only Cookie
     const cookieStore = cookies();

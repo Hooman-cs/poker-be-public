@@ -300,7 +300,7 @@ const PokerAdmin: React.FC = () => {
                     onChange={handleInputChange}
                     className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-md"
                   >
-                    <option value="NLH">No Limit Hold'em (NLH)</option>
+                    <option value="NLH">No Limit Hold&apos;em (NLH)</option>
                     <option value="PLO4">PLO4</option>
                     <option value="PLO5">PLO5</option>
                   </select>
@@ -395,7 +395,7 @@ const PokerAdmin: React.FC = () => {
                     onChange={handleEditInputChange}
                     className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-md"
                   >
-                    <option value="NLH">No Limit Hold'em (NLH)</option>
+                    <option value="NLH">No Limit Hold&apos;em (NLH)</option>
                     <option value="PLO4">PLO4</option>
                     <option value="PLO5">PLO5</option>
                   </select>

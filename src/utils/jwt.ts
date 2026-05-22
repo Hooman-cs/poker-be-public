@@ -14,7 +14,7 @@ import jwt, { SignOptions, JwtPayload } from 'jsonwebtoken';
  */
 export interface IJwtPayload extends JwtPayload {
   userId: string;
-  role?: 'user' | 'editor' | 'superadmin' | 'viewer'; // Inherited from your User model
+  role?: 'user' | 'editor' | 'admin' | 'viewer'; // Inherited from your User model
 }
 
 // -----------------------------------------------------------------------------
@@ -29,7 +29,8 @@ export interface IJwtPayload extends JwtPayload {
  */
 export const signToken = (
   payload: IJwtPayload, 
-  options: SignOptions = { expiresIn: '1h' }
+  // options: SignOptions = { expiresIn: '1h' }
+  options: SignOptions = { expiresIn: '7d' }
 ): string => {
   const secret = process.env.JWT_SECRET;
   

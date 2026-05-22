@@ -3,7 +3,7 @@
  * Contains algorithmic logic for determining hand strength and distributing pots.
  */
 
-import { ICard, IPlayer, IPot, WPot, IPlayerHand } from './pokerModelTypes'; 
+import { ICard, IPlayer, IPot, WPot, IPlayerHand } from '../utils/pokerModelTypes'; 
 
 // -----------------------------------------------------------------------------
 // Core Hand Evaluation Helpers

@@ -106,19 +106,34 @@ export default function BankTransactions() {
     setPage(1);
   };
 
+  // /**
+  //  * API MIGRATION: Update status using RESTful PATCH request
+  //  */
+  // const changeTransactionStatus = async (id: string, newStatus: string) => {
+  //   try {
+  //     await axios.patch(`/api/admin/bankTransactions/${id}/status`, { status: newStatus });
+  //     fetchTransactions(); // Refresh list to get updated data
+  //   } catch (error) {
+  //     console.error('Error updating transaction status:', error);
+  //     alert('Failed to update transaction status.');
+  //   }
+  // };
   /**
    * API MIGRATION: Update status using RESTful PATCH request
+   * FIXED (C2): Changed payload key from 'status' to 'newStatus'
    */
-  const changeTransactionStatus = async (id: string, newStatus: string) => {
+  const changeTransactionStatus = async (id: string, updatedStatus: string) => {
     try {
-      await axios.patch(`/api/admin/bankTransactions/${id}/status`, { status: newStatus });
+      await axios.patch(`/api/admin/bankTransactions/${id}/status`, { 
+        newStatus: updatedStatus 
+      });
       fetchTransactions(); // Refresh list to get updated data
     } catch (error) {
       console.error('Error updating transaction status:', error);
       alert('Failed to update transaction status.');
     }
   };
-
+  
   return (
     <div className="p-6 bg-white rounded-lg shadow-md max-w-7xl mx-auto mt-6 min-h-screen">
       <h1 className="text-2xl font-bold text-gray-800 mb-6">Bank Transactions (Deposits & Withdrawals)</h1>

@@ -126,64 +126,64 @@ export interface IBankAccount {
   status: 'active' | 'blocked' | 'inactive';
 }
 
-export interface IAmountBreakdown {
-  cashAmount: number;       // Cash portion of the transaction
-  instantBonus: number;     // Instant bonus portion
-  lockedBonus: number;      // Locked bonus portion
-  gst: number;              // GST portion (negative value)
-  tds: number;              // TDS deductions (negative value)
-  otherDeductions: number;  // Other deductions (negative value)
-  total: number;            // Total amount for the transaction
-}
+// export interface IAmountBreakdown {
+//   cashAmount: number;       // Cash portion of the transaction
+//   instantBonus: number;     // Instant bonus portion
+//   lockedBonus: number;      // Locked bonus portion
+//   gst: number;              // GST portion (negative value)
+//   tds: number;              // TDS deductions (negative value)
+//   otherDeductions: number;  // Other deductions (negative value)
+//   total: number;            // Total amount for the transaction
+// }
 
-export interface IWalletTransaction {
-  createdOn: Date;
-  completedOn?: Date;
-  status: 'failed' | 'completed' | 'pending' | 'reversed'; // <-- Added 'reversed' here
-  amount: IAmountBreakdown;
-  type: 'deposit' | 'withdraw' | 'deskIn' | 'deskWithdraw' | 'bonus' | 'pgDeposit';
-  remark?: string;
-  DeskId?: mongoose.Types.ObjectId;
-  BankTransactionId?: mongoose.Types.ObjectId;  
-  pmgtId?: mongoose.Types.ObjectId;
-}
+// export interface IWalletTransaction {
+//   createdOn: Date;
+//   completedOn?: Date;
+//   status: 'failed' | 'completed' | 'pending' | 'reversed'; // <-- Added 'reversed' here
+//   amount: IAmountBreakdown;
+//   type: 'deposit' | 'withdraw' | 'deskIn' | 'deskWithdraw' | 'bonus' | 'pgDeposit';
+//   remark?: string;
+//   DeskId?: mongoose.Types.ObjectId;
+//   BankTransactionId?: mongoose.Types.ObjectId;  
+//   pmgtId?: mongoose.Types.ObjectId;
+// }
 
-// Interface for the wallet containing balances and transactions
-export interface IWallet {
-  balance: number;        // Wallet cash balance
-  instantBonus: number;   // Instant bonus balance
-  lockedBonus: number;    // Locked bonus balance
-  transactions: IWalletTransaction[]; // Array of wallet transactions
-}
+// // Interface for the wallet containing balances and transactions
+// export interface IWallet {
+//   balance: number;        // Wallet cash balance
+//   instantBonus: number;   // Instant bonus balance
+//   lockedBonus: number;    // Locked bonus balance
+//   transactions: IWalletTransaction[]; // Array of wallet transactions
+// }
 
-export interface ILoginMetaData {
-  ipAddress: string;
-  deviceInfo: string;
-  deviceType?: string;
-  latitude?: number | null;
-  longitude?: number | null;
-}
+// export interface ILoginMetaData {
+//   ipAddress: string;
+//   deviceInfo: string;
+//   deviceType?: string;
+//   latitude?: number | null;
+//   longitude?: number | null;
+// }
 
-export interface IUser extends Document {
-  mobileNumber: string;
-  username: string; 
-  registrationDate: Date;
-  lastLogin: Date;
-  isActive: boolean;
-  status: string;
-  role?: 'user' | 'editor' | 'superadmin' | 'viewer';
-  wallet: IWallet;
-  bankAccounts: IBankAccount[];
-  deviceInfo: string;       // Device information string (e.g., browser or device details)
-  ipAddress: string;        // IP address of the user
-  deviceType: string;       // Device type (default to 'android')
-  latitude?: number;        // Optional latitude for location
-  longitude?: number;       // Optional longitude for location
-  // updateLastLogin(req: Request): Promise<void>;
-  // Update this line specifically to use the new meta data interface:
-  updateLastLogin?: (metaData: ILoginMetaData) => Promise<void>;
-  toggleActiveStatus?: () => Promise<void>;
-} 
+// export interface IUser extends Document {
+//   mobileNumber: string;
+//   username: string; 
+//   registrationDate: Date;
+//   lastLogin: Date;
+//   isActive: boolean;
+//   status: string;
+//   role?: 'user' | 'editor' | 'superadmin' | 'viewer';
+//   wallet: IWallet;
+//   bankAccounts: IBankAccount[];
+//   deviceInfo: string;       // Device information string (e.g., browser or device details)
+//   ipAddress: string;        // IP address of the user
+//   deviceType: string;       // Device type (default to 'android')
+//   latitude?: number;        // Optional latitude for location
+//   longitude?: number;       // Optional longitude for location
+//   // updateLastLogin(req: Request): Promise<void>;
+//   // Update this line specifically to use the new meta data interface:
+//   updateLastLogin?: (metaData: ILoginMetaData) => Promise<void>;
+//   toggleActiveStatus?: () => Promise<void>;
+// } 
 
 // -----------------------------------------------------------------------------
 // Core Game Types

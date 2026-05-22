@@ -4,7 +4,7 @@
  * and resolving all-in scenarios mathematically.
  */
 
-import { IRound, WPot, PlayerAction } from './pokerModelTypes';
+import { IRound, WPot, PlayerAction } from '../utils/pokerModelTypes';
 
 // -----------------------------------------------------------------------------
 // Internal Accumulator Types

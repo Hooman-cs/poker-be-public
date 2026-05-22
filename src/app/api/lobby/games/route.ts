@@ -67,13 +67,23 @@ export async function GET(request: NextRequest) {
 
         const stats = deskStats[0] || { totalSeats: 0, livePlayers: 0 };
 
-        // Construct Mode Payload
+        // // Construct Mode Payload
+        // const modePayload: any = {
+        //   pokerModeId: mode._id,
+        //   mode: mode.mode,
+        //   minBuyIn: mode.minBuyIn,
+        //   maxBuyIn: mode.maxBuyIn,
+        //   bType: mode.bType,
+        //   totalSeats: stats.totalSeats,
+        //   livePlayers: stats.livePlayers,
+        // };
         const modePayload: any = {
           pokerModeId: mode._id,
           mode: mode.mode,
           minBuyIn: mode.minBuyIn,
           maxBuyIn: mode.maxBuyIn,
           bType: mode.bType,
+          //description: mode.description,    // ADD THIS
           totalSeats: stats.totalSeats,
           livePlayers: stats.livePlayers,
         };
@@ -90,6 +100,16 @@ export async function GET(request: NextRequest) {
 
       const resolvedModes = await Promise.all(modesWithStatsPromises);
 
+      // return {
+      //   pokerId: poker._id,
+      //   name: poker.name,
+      //   gameType: poker.gameType,
+      //   objective: poker.objective,
+      //   rules: poker.rules,
+      //   status: poker.status,
+      //   description: poker.description,
+      //   pokerModes: resolvedModes,
+      // };
       return {
         pokerId: poker._id,
         name: poker.name,
@@ -98,6 +118,7 @@ export async function GET(request: NextRequest) {
         rules: poker.rules,
         status: poker.status,
         description: poker.description,
+        blindsOrAntes: poker.blindsOrAntes,  // ADD THIS
         pokerModes: resolvedModes,
       };
     });

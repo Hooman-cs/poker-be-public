@@ -107,8 +107,36 @@ export default function UserManagementPage() {
     setRemark("");
   };
 
+  // /**
+  //  * API MIGRATION: Add Balance (Bonus) via POST
+  //  */
+  // const handleBonusSubmit = async () => {
+  //   if (!currentUser || !bonusAmount || isNaN(Number(bonusAmount))) {
+  //     alert("Please enter a valid bonus amount.");
+  //     return;
+  //   }
+
+  //   setIsSubmitting(true);
+  //   try {
+  //     await axios.post(`/api/admin/users/${currentUser._id}/balance`, {
+  //       amount: Number(bonusAmount),
+  //       remark,
+  //       type: 'bonus' // Standardizing the ledger entry type
+  //     });
+      
+  //     alert(`Successfully added bonus to ${currentUser.username}`);
+  //     handleCloseBonusModal();
+  //     fetchUsers(); // Refresh balances
+  //   } catch (error) {
+  //     console.error("Error adding bonus:", error);
+  //     alert("Failed to add bonus.");
+  //   } finally {
+  //     setIsSubmitting(false);
+  //   }
+  // };
   /**
    * API MIGRATION: Add Balance (Bonus) via POST
+   * FIXED (C1): Updated payload to match expected { bonusAmount, action, remark }
    */
   const handleBonusSubmit = async () => {
     if (!currentUser || !bonusAmount || isNaN(Number(bonusAmount))) {
@@ -119,9 +147,9 @@ export default function UserManagementPage() {
     setIsSubmitting(true);
     try {
       await axios.post(`/api/admin/users/${currentUser._id}/balance`, {
-        amount: Number(bonusAmount),
-        remark,
-        type: 'bonus' // Standardizing the ledger entry type
+        bonusAmount: Number(bonusAmount), // Changed from 'amount'
+        action: 'add',                    // Changed from 'type'
+        remark                            // Kept remark for audit logs
       });
       
       alert(`Successfully added bonus to ${currentUser.username}`);
@@ -134,7 +162,7 @@ export default function UserManagementPage() {
       setIsSubmitting(false);
     }
   };
-
+  
   return (
     <div className="p-6 bg-white rounded-lg shadow-md max-w-7xl mx-auto mt-6 min-h-screen">
       <h1 className="text-2xl font-bold text-gray-800 mb-6">User Management</h1>

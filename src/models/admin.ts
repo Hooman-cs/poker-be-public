@@ -1,142 +1,159 @@
 /**
- * @fileoverview Admin Database Model
- * Encapsulates the schema, cryptographic password hashing, and validation methods.
+ * @fileoverview Admin Model
+ * Handles admin account authentication and management.
+ * Admin login is via email and password.
+ * JWT is stored in httpOnly cookie, not in the database.
  */
 
 import mongoose, { Schema, Document, Model } from 'mongoose';
 import bcrypt from 'bcryptjs';
 
-// 1. Strict Types for the Raw Data
 export interface IAdmin {
   name: string;
+  email: string;
   mobile: string;
-  token?: string;
-  status: 'active' | 'inactive';
-  role: 'superadmin' | 'editor' | 'viewer';
-  lastLogin?: Date | null;
-  email?: string;
   password: string;
+  role: 'admin';
+  status: 'active' | 'inactive';
+  lastLogin: Date | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
 
-// 2. Strict Types for the Mongoose Document (includes instance methods)
 export interface IAdminDocument extends IAdmin, Document {
   comparePassword(candidatePassword: string): Promise<boolean>;
 }
 
-// 3. Schema Definition
-const AdminSchema: Schema<IAdminDocument> = new Schema(
+const AdminSchema = new Schema<IAdminDocument>(
   {
-    name: { type: String, required: true, trim: true },
-    mobile: { type: String, required: true, unique: true },
-    token: { type: String, default: '' },
-    status: { type: String, enum: ['active', 'inactive'], default: 'active', required: true },
-    role: { type: String, enum: ['superadmin', 'editor', 'viewer'], default: 'editor' },
-    lastLogin: { type: Date, default: null },
-    email: { type: String, unique: true, sparse: true, trim: true },
-    password: { type: String, required: true, minlength: 6 },
+    name: {
+      type: String,
+      required: [true, 'Name is required'],
+      trim: true,
+    },
+    email: {
+      type: String,
+      required: [true, 'Email is required'],
+      unique: true,
+      trim: true,
+      lowercase: true,
+      validate: {
+        validator: (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v),
+        message: (props: { value: string }) =>
+          `${props.value} is not a valid email address`,
+      },
+    },
+    mobile: {
+      type: String,
+      required: [true, 'Mobile number is required'],
+      unique: true,
+      validate: {
+        validator: (v: string) => /^[0-9]{10}$/.test(v),
+        message: (props: { value: string }) =>
+          `${props.value} is not a valid 10-digit mobile number`,
+      },
+    },
+    password: {
+      type: String,
+      required: [true, 'Password is required'],
+      minlength: [12, 'Password must be at least 12 characters'],
+    },
+    role: {
+      type: String,
+      enum: ['admin'],
+      default: 'admin',
+    },
+    status: {
+      type: String,
+      enum: ['active', 'inactive'],
+      default: 'active',
+    },
+    lastLogin: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,
   }
 );
 
-// 4. Pre-Save Hook: Hash Password
 AdminSchema.pre<IAdminDocument>('save', async function (next) {
-  if (this.isModified('password')) {
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-  }
+  if (!this.isModified('password')) return next();
+  const salt = await bcrypt.genSalt(12);
+  this.password = await bcrypt.hash(this.password, salt);
   next();
 });
 
-// 5. Instance Method: Compare Password
-AdminSchema.methods.comparePassword = async function (candidatePassword: string): Promise<boolean> {
+AdminSchema.methods.comparePassword = async function (
+  candidatePassword: string
+): Promise<boolean> {
   return bcrypt.compare(candidatePassword, this.password);
 };
 
-// 6. Model Export
-const Admin: Model<IAdminDocument> = mongoose.models.Admin || mongoose.model<IAdminDocument>('Admin', AdminSchema);
+const Admin: Model<IAdminDocument> =
+  mongoose.models.Admin || mongoose.model<IAdminDocument>('Admin', AdminSchema);
 
 export default Admin;
-// import mongoose, { Schema, Document, Model } from 'mongoose';
-// import bcrypt from 'bcryptjs';  // Import bcrypt for password hashing
+// /**
+//  * @fileoverview Admin Database Model
+//  * Encapsulates the schema, cryptographic password hashing, and validation methods.
+//  */
 
-// // Define the TypeScript interface for the Admin document
-// interface IAdmin extends Document {
+// import mongoose, { Schema, Document, Model } from 'mongoose';
+// import bcrypt from 'bcryptjs';
+
+// // 1. Strict Types for the Raw Data
+// export interface IAdmin {
 //   name: string;
 //   mobile: string;
-//   token?: string; // Token is optional
+//   token?: string;
 //   status: 'active' | 'inactive';
-//   role: 'superadmin' | 'editor' | 'viewer'; // Different roles for admin
-//   lastLogin?: Date | null; // lastLogin is optional and can be null
-//   email?: string; // Email is optional
-//   password: string; // Password is required
+//   role: 'superadmin' | 'editor' | 'viewer';
+//   lastLogin?: Date | null;
+//   email?: string;
+//   password: string;
 //   createdAt?: Date;
 //   updatedAt?: Date;
 // }
 
-// // Define the schema for the Admin model
-// const AdminSchema: Schema<IAdmin> = new Schema(
+// // 2. Strict Types for the Mongoose Document (includes instance methods)
+// export interface IAdminDocument extends IAdmin, Document {
+//   comparePassword(candidatePassword: string): Promise<boolean>;
+// }
+
+// // 3. Schema Definition
+// const AdminSchema: Schema<IAdminDocument> = new Schema(
 //   {
-//     name: {
-//       type: String,
-//       required: true,
-//       trim: true,
-//     },
-//     mobile: {
-//       type: String,
-//       required: true,
-//       unique: true,
-//     },
-//     token: {
-//       type: String,
-//       default: '', // Set a default value for token
-//     },
-//     status: {
-//       type: String,
-//       enum: ['active', 'inactive'],
-//       default: 'active',
-//       required: true,
-//     },
-//     role: {
-//       type: String,
-//       enum: ['superadmin', 'editor', 'viewer'], // Enum to allow only specified roles
-//       default: 'editor',
-//     },
-//     lastLogin: {
-//       type: Date,
-//       default: null, // Initialized as null until the first login
-//     },
-//     email: {
-//       type: String,
-//       unique: true,
-//       sparse: true,
-//       trim: true,
-//     },
-//     password: {
-//       type: String,
-//       required: true, // Password is required
-//       minlength: 6, // Password length validation
-//     },
+//     name: { type: String, required: true, trim: true },
+//     mobile: { type: String, required: true, unique: true },
+//     token: { type: String, default: '' },
+//     status: { type: String, enum: ['active', 'inactive'], default: 'active', required: true },
+//     role: { type: String, enum: ['superadmin', 'editor', 'viewer'], default: 'editor' },
+//     lastLogin: { type: Date, default: null },
+//     email: { type: String, unique: true, sparse: true, trim: true },
+//     password: { type: String, required: true, minlength: 6 },
 //   },
 //   {
-//     timestamps: true, // Automatically handles createdAt and updatedAt
+//     timestamps: true,
 //   }
 // );
 
-// // Hash the password before saving the admin document
-// AdminSchema.pre<IAdmin>('save', async function (next) {
+// // 4. Pre-Save Hook: Hash Password
+// AdminSchema.pre<IAdminDocument>('save', async function (next) {
 //   if (this.isModified('password')) {
-//     // Hash password before saving if it is modified or new
 //     const salt = await bcrypt.genSalt(10);
 //     this.password = await bcrypt.hash(this.password, salt);
 //   }
 //   next();
 // });
 
-// // Create the Admin model if it doesn’t already exist
-// const Admin: Model<IAdmin> = mongoose.models.Admin || mongoose.model<IAdmin>('Admin', AdminSchema);
+// // 5. Instance Method: Compare Password
+// AdminSchema.methods.comparePassword = async function (candidatePassword: string): Promise<boolean> {
+//   return bcrypt.compare(candidatePassword, this.password);
+// };
+
+// // 6. Model Export
+// const Admin: Model<IAdminDocument> = mongoose.models.Admin || mongoose.model<IAdminDocument>('Admin', AdminSchema);
 
 // export default Admin;

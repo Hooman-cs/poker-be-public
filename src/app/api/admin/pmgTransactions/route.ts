@@ -6,7 +6,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import dbConnect from '@/config/dbConnect';
-import PMGTransaction from '@/models/pmgtTransaction';
+import PMGTransaction from '@/models/gatewayTransaction';
 import User from '@/models/user';
 import { verifyToken } from '@/utils/jwt';
 import { cookies } from 'next/headers';
