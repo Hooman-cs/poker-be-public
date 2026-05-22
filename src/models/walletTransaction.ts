@@ -38,7 +38,7 @@ export interface ITransaction {
   remark?: string;
   deskId?: mongoose.Types.ObjectId;
   bankTransactionId?: mongoose.Types.ObjectId;
-  paymentId?: mongoose.Types.ObjectId;
+  gatewayTransactionId?: mongoose.Types.ObjectId;
   createdOn: Date;
   completedOn?: Date;
 }
@@ -95,9 +95,9 @@ const TransactionSchema = new Schema<ITransactionDocument>(
       ref: 'BankTransaction',
       default: null,
     },
-    paymentId: {
+    gatewayTransactionId: {
       type: Schema.Types.ObjectId,
-      ref: 'PaymentTransaction',
+      ref: 'GatewayTransaction',
       default: null,
     },
     createdOn: {

@@ -10,15 +10,16 @@ import Wallet from '@/models/wallet';
 import WalletTransaction from '@/models/walletTransaction';
 import PokerGameArchive from '@/models/pokerGameArchive';
 import { PokerGameType } from '@/models/poker';
-import { evaluatePots } from '@/engine/evaluate';
-import { createPots } from '@/engine/createPots';
+import { evaluatePots } from '@/engine/handEvaluator';
+import { calculatePots } from '@/engine/potCalculator';
 import {
   initializeGameState,
   processPlayerAction,
   determineRoundProgression,
   buildArchiveData,
+  generateDeck,
+  dealCards as dealCardsFromDeck,
 } from '@/engine/gameEngine';
-import { generateDeck, dealCards as dealCardsFromDeck } from '@/engine/gameEngine';
 
 export type SeatStatus = 'active' | 'disconnected' | 'sittingOut';
 export type PlayerStatus = 'active' | 'all-in' | 'folded' | 'sitting-out';
@@ -932,7 +933,7 @@ PokerDeskSchema.methods.handlePlayerAction = async function (
 //     throw new Error('No active game to end.');
 //   }
 
-//   const gamePots = createPots(this.currentGame.rounds);
+//   const gamePots = calculatePots(this.currentGame.rounds);
 //   const potResults = evaluatePots(
 //     this.currentGame.players,
 //     this.currentGame.communityCards,
@@ -1004,7 +1005,7 @@ PokerDeskSchema.methods.showdown = async function (): Promise<void> {
     throw new Error('No active game to end.');
   }
 
-  const gamePots = createPots(this.currentGame.rounds);
+  const gamePots = calculatePots(this.currentGame.rounds);
   const potResults = evaluatePots(
     this.currentGame.players,
     this.currentGame.communityCards,
