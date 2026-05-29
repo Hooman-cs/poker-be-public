@@ -1,24 +1,22 @@
 /**
  * @fileoverview General utility and helper functions.
+ *
+ * `generateOtp` was removed in Phase 0 task 0.11 along with the OTP model
+ * and OTP routes. If OTP-based auth is ever revived, build it fresh against
+ * the providers structure — do not resurrect old code. See TASKS.md's
+ * auth change log in the parking lot for the breadcrumb.
  */
 
 import crypto from 'crypto';
 
 /**
- * Generates a cryptographically secure 6-digit One-Time Password (OTP).
- * Replaced Math.random() with crypto to prevent predictability vulnerabilities.
- * 
- * @returns {string} The secure 6-digit OTP.
- */
-export const generateOtp = (): string => {
-  // Generates a random integer between 100000 (inclusive) and 1000000 (exclusive)
-  return crypto.randomInt(100000, 1000000).toString(); 
-};
-
-/**
- * Generates a random stylized gamer tag (e.g., "FierceDragon48291").
- * 
- * @returns {string} A randomly generated gamer name.
+ * Generates a random stylized gamer tag (e.g. "FierceDragon48291").
+ * Used to give first-time users a default unique username at registration.
+ *
+ * The caller is responsible for guaranteeing uniqueness — this function
+ * produces a likely-unique string with reasonable entropy, but does not
+ * check the database. The auth route should retry on collision (or append
+ * additional entropy) until `User.findOne({ username })` returns null.
  */
 export const generateGamerName = (): string => {
   const adjectives: string[] = [
@@ -35,10 +33,9 @@ export const generateGamerName = (): string => {
     "Wraith", "Cyclone", "Phoenix", "Juggernaut", "Reaper"
   ];
 
-  // Using crypto here as well for consistent randomness across the utility
   const randomAdjective = adjectives[crypto.randomInt(0, adjectives.length)];
   const randomNoun = nouns[crypto.randomInt(0, nouns.length)];
-  const randomNumber = crypto.randomInt(10000, 100000); 
+  const randomNumber = crypto.randomInt(10000, 100000);
 
   return `${randomAdjective}${randomNoun}${randomNumber}`;
 };

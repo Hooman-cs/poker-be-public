@@ -1,7 +1,8 @@
 /**
  * @fileoverview Poker Model
  * Defines the supported poker game types available on the platform.
- * Each game type can have multiple modes with different stakes configurations.
+ * Each game type can have multiple modes (PokerMode) with different stakes.
+ * This is a small reference/config model — no money fields, no currency.
  */
 
 import mongoose, { Schema, Document, Model } from 'mongoose';
@@ -60,7 +61,6 @@ const PokerSchema = new Schema<IPokerDocument>(
 );
 
 PokerSchema.index({ status: 1 });
-PokerSchema.index({ gameType: 1 });
 
 const Poker: Model<IPokerDocument> =
   mongoose.models.Poker ||

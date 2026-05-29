@@ -1,8 +1,10 @@
 /**
- * @fileoverview Poker Game Engine
- * Pure functions for poker game logic.
- * No mongoose dependencies — all functions take plain data and return plain data.
- * Schema methods in pokerDesk.ts call these functions and apply results to the document.
+ * @fileoverview Poker Game Engine — pure functions for game logic.
+ * No mongoose, no DB, no side effects. Every function takes plain data and
+ * returns plain data. The service layer (src/services/gameService.ts) calls
+ * these and applies the results to documents, owning all persistence.
+ *
+ * All money values are INTEGER minor units (paise/cents).
  */
 
 import {
@@ -34,7 +36,9 @@ export interface IGameState {
 export interface IActionResult {
   actionRecord: IPlayerActionRecord;
   updatedPlayer: IGamePlayer;
+  /** Player's seat balance after the action, minor units. */
   updatedSeatBalance: number;
+  /** Game's running total bet after the action, minor units. */
   updatedTotalBet: number;
 }
 
@@ -54,6 +58,7 @@ export interface IInitialGameState {
   deck: ICard[];
 }
 
+/** A player record as it will be persisted in PokerGameArchive. */
 export interface IArchivePlayer {
   userId: Types.ObjectId;
   username: string;
@@ -83,19 +88,30 @@ export interface IArchiveData {
   completedAt: Date;
 }
 
+/**
+ * What `advanceRound` produces. The service applies these to the document and
+ * saves; it never inspects the engine's reasoning, only the result.
+ */
+export interface IAdvanceRoundResult {
+  /** The new round to push onto game.rounds. */
+  newRound: IRound;
+  /** Community cards to APPEND to game.communityCards (may be empty for showdown). */
+  newCommunityCards: ICard[];
+  /** Who acts first in the new round (null on showdown). */
+  nextTurnPlayer: Types.ObjectId | null;
+}
+
 const SUITS: CardSuit[] = ['hearts', 'diamonds', 'clubs', 'spades'];
 const RANKS: CardRank[] = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
 
 const ROUND_ORDER: RoundName[] = ['pre-flop', 'flop', 'turn', 'river', 'showdown'];
 
 const HOLE_CARDS_BY_GAME: Partial<Record<PokerGameType, number>> = {
-  'Omaha': 4,
+  Omaha: 4,
   'Seven-Card Stud': 7,
 };
 
-/**
- * Generates a freshly shuffled 52-card deck.
- */
+/** Returns a freshly shuffled 52-card deck. */
 export function generateDeck(): ICard[] {
   const deck: ICard[] = SUITS.flatMap((suit) =>
     RANKS.map((rank) => ({ suit, rank }))
@@ -103,9 +119,7 @@ export function generateDeck(): ICard[] {
   return shuffleDeck(deck);
 }
 
-/**
- * Shuffles an array of cards in place using Fisher-Yates algorithm.
- */
+/** Fisher-Yates shuffle, returns a new array (does not mutate input). */
 export function shuffleDeck(deck: ICard[]): ICard[] {
   const shuffled = [...deck];
   for (let i = shuffled.length - 1; i > 0; i--) {
@@ -116,17 +130,15 @@ export function shuffleDeck(deck: ICard[]): ICard[] {
 }
 
 /**
- * Deals N cards from a deck, avoiding cards already in use.
+ * Deals `count` cards from `deck`, avoiding any cards already in `usedCards`.
+ * Returns the dealt cards and the remaining deck.
  */
 export function dealCards(
   deck: ICard[],
   count: number,
   usedCards: ICard[] = []
 ): { dealt: ICard[]; remaining: ICard[] } {
-  const usedSet = new Set<string>(
-    usedCards.map((c) => `${c.rank}${c.suit}`)
-  );
-
+  const usedSet = new Set<string>(usedCards.map((c) => `${c.rank}${c.suit}`));
   const available = deck.filter((c) => !usedSet.has(`${c.rank}${c.suit}`));
   const dealt: ICard[] = [];
   const remaining = [...available];
@@ -138,17 +150,12 @@ export function dealCards(
   return { dealt, remaining };
 }
 
-/**
- * Returns the number of hole cards for a given game type.
- */
+/** Hole-card count for the active game type (defaults to 2 for Hold'em / Razz / 5CD). */
 export function getHoleCardCount(gameType: PokerGameType): number {
   return HOLE_CARDS_BY_GAME[gameType] ?? 2;
 }
 
-/**
- * Finds the next active player after the current player in turn order.
- * Returns null if no active player is found.
- */
+/** Walks player order from `currentUserId` and returns the next active player. */
 export function getNextActivePlayer(
   players: IGamePlayer[],
   currentUserId: Types.ObjectId
@@ -166,19 +173,16 @@ export function getNextActivePlayer(
   return null;
 }
 
-/**
- * Finds the first active player in the players array.
- * Returns null if no active player is found.
- */
+/** First active player from index 0 — used to set first-to-act on a new round. */
 export function getFirstActivePlayer(
   players: IGamePlayer[]
 ): Types.ObjectId | null {
-  const activePlayer = players.find((p) => p.status === 'active');
-  return activePlayer?.userId ?? null;
+  return players.find((p) => p.status === 'active')?.userId ?? null;
 }
 
 /**
- * Calculates how much a player needs to call in the current round.
+ * Amount this player still owes to match the highest bet of the round.
+ * Negative bets are impossible (model guards reject them) so the result is >= 0.
  */
 export function calculateCallAmount(
   round: IRound,
@@ -190,7 +194,7 @@ export function calculateCallAmount(
   for (const act of round.actions) {
     const key = act.userId.toString();
     playerBets[key] = (playerBets[key] || 0) + act.amount;
-    maxBet = Math.max(maxBet, playerBets[key]);
+    if (playerBets[key] > maxBet) maxBet = playerBets[key];
   }
 
   const playerTotalBet = playerBets[userId.toString()] || 0;
@@ -198,8 +202,9 @@ export function calculateCallAmount(
 }
 
 /**
- * Processes a player action and returns the updated state.
- * Does not mutate inputs — returns new values for caller to apply.
+ * Computes the result of a single player action without mutating inputs.
+ * The caller (service) applies updatedPlayer / updatedSeatBalance /
+ * updatedTotalBet to the document and persists.
  */
 export function processPlayerAction(
   player: IGamePlayer,
@@ -225,14 +230,13 @@ export function processPlayerAction(
   if (action === 'fold') {
     updatedPlayer.status = 'folded';
     actionRecord.action = 'fold';
-
   } else if (action === 'check') {
     if (callAmount !== 0) throw new Error('Cannot check — there is an active bet to call.');
     actionRecord.action = 'check';
-
   } else if (['call', 'raise', 'all-in'].includes(action)) {
     let finalAmount = action === 'raise' ? amount : callAmount;
 
+    // Going all-in (either explicitly, or by trying to bet >= remaining stack).
     if (action === 'all-in' || finalAmount >= updatedPlayer.balanceAtTable) {
       finalAmount = updatedPlayer.balanceAtTable;
       actionRecord.action =
@@ -252,7 +256,6 @@ export function processPlayerAction(
     updatedSeatBalance -= finalAmount;
     updatedTotalBet += finalAmount;
     actionRecord.amount = finalAmount;
-
   } else {
     throw new Error(`Invalid action: ${action}`);
   }
@@ -261,8 +264,9 @@ export function processPlayerAction(
 }
 
 /**
- * Determines what should happen after a player action.
- * Returns whether to continue, advance to next round, or go to showdown.
+ * Decides whether the hand continues, advances to the next round, or goes to
+ * showdown. The service inspects `type` and calls `advanceRound` or proceeds
+ * to showdown accordingly.
  */
 export function determineRoundProgression(
   players: IGamePlayer[],
@@ -278,19 +282,18 @@ export function determineRoundProgression(
   }
 
   const nextPlayerId = getNextActivePlayer(players, currentUserId);
-
   if (!nextPlayerId) {
     return { type: 'showdown', nextPlayerId: null };
   }
 
-  const actionPlayerIds = new Set(
-    round.actions.map((a) => a.userId.toString())
-  );
+  const actionPlayerIds = new Set(round.actions.map((a) => a.userId.toString()));
 
+  // If the next player hasn't acted yet this round, the round continues.
   if (!actionPlayerIds.has(nextPlayerId.toString())) {
     return { type: 'continue', nextPlayerId };
   }
 
+  // Everyone has acted: check if bets are equal (round closed).
   const totalBets = round.actions.reduce(
     (acc: Record<string, number>, act) => {
       const key = act.userId.toString();
@@ -301,9 +304,7 @@ export function determineRoundProgression(
   );
 
   const uniqueBets = new Set(Object.values(totalBets));
-  const activeOnlyCount = activePlayers.filter(
-    (p) => p.status === 'active'
-  ).length;
+  const activeOnlyCount = activePlayers.filter((p) => p.status === 'active').length;
 
   if (uniqueBets.size === 1 && (round.name === 'river' || activeOnlyCount === 1)) {
     return { type: 'showdown', nextPlayerId: null };
@@ -312,19 +313,16 @@ export function determineRoundProgression(
   if (uniqueBets.size === 1) {
     const currentRoundIndex = ROUND_ORDER.indexOf(round.name);
     const nextRoundName = ROUND_ORDER[currentRoundIndex + 1];
-    return {
-      type: 'nextRound',
-      nextPlayerId: null,
-      nextRoundName,
-    };
+    return { type: 'nextRound', nextPlayerId: null, nextRoundName };
   }
 
   return { type: 'continue', nextPlayerId };
 }
 
 /**
- * Builds the initial game state from active seats.
- * Returns the full initial game state and the deck used.
+ * Builds the initial game state from active seats. Seats with insufficient
+ * balance to meet minBuyIn are excluded — the service is responsible for
+ * cleaning those seats up after this returns.
  */
 export function initializeGameState(
   seats: ISeat[],
@@ -346,6 +344,7 @@ export function initializeGameState(
     role: 'player' as PlayerRole,
   }));
 
+  // Blind/ante semantics (settled): SB = stake, BB = 2*stake, ante = stake.
   const isBlinds = bType === 'blinds';
   const smallBlindAmount = isBlinds ? stake : 0;
   const bigBlindAmount = isBlinds ? stake * 2 : 0;
@@ -385,6 +384,7 @@ export function initializeGameState(
   });
 
   const initialPot = players.reduce((sum, p) => sum + p.totalBet, 0);
+  // First to act pre-flop: UTG (player after BB) in blinds; player[0] in antes / heads-up.
   const firstToAct = isBlinds
     ? players[2]?.userId ?? players[0].userId
     : players[0].userId;
@@ -406,28 +406,7 @@ export function initializeGameState(
   };
 }
 
-/**
- * Deals community cards for a given round.
- * Returns the cards to add to communityCards.
- */
-export function getCommunityCardsForRound(
-  roundName: RoundName,
-  existingPlayers: IGamePlayer[],
-  existingCommunityCards: ICard[]
-): ICard[] {
-  const usedCards: ICard[] = [
-    ...existingPlayers.flatMap((p) => p.holeCards),
-    ...existingCommunityCards,
-  ];
-
-  const deck = generateDeck();
-  const { dealt } = dealCards(deck, getRoundCardCount(roundName), usedCards);
-  return dealt;
-}
-
-/**
- * Returns the number of community cards to deal for a given round.
- */
+/** Number of community cards to deal at the start of a given round. */
 export function getRoundCardCount(roundName: RoundName): number {
   switch (roundName) {
     case 'flop': return 3;
@@ -437,10 +416,7 @@ export function getRoundCardCount(roundName: RoundName): number {
   }
 }
 
-/**
- * Returns the next round name after the given round.
- * Returns null if there is no next round.
- */
+/** Next round after `currentRound`, or null if past river. */
 export function getNextRoundName(currentRound: RoundName): RoundName | null {
   const index = ROUND_ORDER.indexOf(currentRound);
   if (index === -1 || index >= ROUND_ORDER.length - 1) return null;
@@ -448,23 +424,84 @@ export function getNextRoundName(currentRound: RoundName): RoundName | null {
 }
 
 /**
- * Builds the data needed to create a PokerGameArchive document.
+ * Composes the pieces above into a single "what happens when we advance the
+ * round" answer. The service uses the result to push the new round, append
+ * any community cards, and update currentTurnPlayer in one persist step.
+ *
+ * Throws if there is no next round (the service should have routed to
+ * showdown via determineRoundProgression in that case).
+ */
+export function advanceRound(
+  currentRoundName: RoundName,
+  players: IGamePlayer[],
+  existingCommunityCards: ICard[]
+): IAdvanceRoundResult {
+  const nextRoundName = getNextRoundName(currentRoundName);
+  if (!nextRoundName) {
+    throw new Error(`No round after ${currentRoundName}`);
+  }
+
+  // Showdown is a logical "round" with no betting and no community cards dealt here.
+  if (nextRoundName === 'showdown') {
+    return {
+      newRound: {
+        name: 'showdown',
+        bettingRoundStartedAt: new Date(),
+        actions: [],
+      },
+      newCommunityCards: [],
+      nextTurnPlayer: null,
+    };
+  }
+
+  const cardCount = getRoundCardCount(nextRoundName);
+  const usedCards: ICard[] = [
+    ...players.flatMap((p) => p.holeCards),
+    ...existingCommunityCards,
+  ];
+  const { dealt } = dealCards(generateDeck(), cardCount, usedCards);
+
+  return {
+    newRound: {
+      name: nextRoundName,
+      bettingRoundStartedAt: new Date(),
+      actions: [],
+    },
+    newCommunityCards: dealt,
+    nextTurnPlayer: getFirstActivePlayer(players),
+  };
+}
+
+/**
+ * Builds the archive payload for PokerGameArchive.create(). Takes a
+ * `userId -> username` map (built by the service via one User.find) so the
+ * archive's required username fields are populated — preventing the empty-
+ * string crash where the archive's `required: true` validator rejected blank
+ * usernames at showdown.
+ *
+ * If a userId is unexpectedly missing from the map, falls back to the literal
+ * string 'unknown' so an archive write never crashes a hand mid-finalization;
+ * the service should log this as a data anomaly.
  */
 export function buildArchiveData(
   seats: ISeat[],
   players: IGamePlayer[],
-  potResults: any[],
+  potResults: { amount: number; winners: { playerId: Types.ObjectId; amount: number }[] }[],
   totalPot: number,
-  startedAt: Date
+  startedAt: Date,
+  usernameByUserId: Map<string, string>
 ): IArchiveData {
+  const nameFor = (id: Types.ObjectId): string =>
+    usernameByUserId.get(id.toString()) ?? 'unknown';
+
   const archivePlayers: IArchivePlayer[] = players.map((p) => {
     const seat = seats.find((s) => s.userId.equals(p.userId));
     const isWinner = potResults.some((pot) =>
-      pot.winners.some((w: any) => w.playerId.equals(p.userId))
+      pot.winners.some((w) => w.playerId.equals(p.userId))
     );
     return {
       userId: p.userId,
-      username: '',
+      username: nameFor(p.userId),
       seatNumber: seat?.seatNumber ?? 0,
       startingStack: seat?.buyInAmount ?? 0,
       endingStack: seat?.balanceAtTable ?? 0,
@@ -476,9 +513,9 @@ export function buildArchiveData(
   const archivePots: IArchivePot[] = potResults.map((pot, index) => ({
     potNumber: index + 1,
     totalAmount: pot.amount,
-    winners: pot.winners.map((w: any) => ({
+    winners: pot.winners.map((w) => ({
       playerId: w.playerId,
-      username: '',
+      username: nameFor(w.playerId),
       amount: w.amount,
       handDescription: '',
     })),

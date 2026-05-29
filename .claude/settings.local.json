@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir /s /b \"p:\\\\poker\\\\src\\\\models\" 2>nul)",
+      "Bash(dir /s /b \"p:\\\\poker\\\\src\\\\models\\\\\" && dir /s /b \"p:\\\\poker\\\\src\\\\engine\\\\\")"
+    ],
+    "additionalDirectories": [
+      "p:\\poker"
+    ]
+  }
+}

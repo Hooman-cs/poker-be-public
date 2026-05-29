@@ -1,10 +1,16 @@
 /**
- * @fileoverview Transaction Model
- * Records every individual wallet transaction for a user.
- * Separated from User model for performance and scalability.
+ * @fileoverview WalletTransaction Model
+ * Records every individual wallet movement for a user.
+ * Separated from the Wallet model for performance and scalability.
+ *
+ * All amounts are INTEGER minor units (paise/cents), never floats.
+ * Registered as the 'WalletTransaction' model (collection: wallettransactions).
+ * NOTE: this was previously registered as 'Transaction' — any code that referenced
+ * model name 'Transaction' or ref: 'Transaction' must now use 'WalletTransaction'.
  */
 
 import mongoose, { Schema, Document, Model } from 'mongoose';
+import { SUPPORTED_CURRENCIES, DEFAULT_CURRENCY, Currency } from '@/config/constants';
 
 export type TransactionType =
   | 'deposit'
@@ -20,6 +26,11 @@ export type TransactionStatus =
   | 'failed'
   | 'reversed';
 
+/**
+ * The breakdown of a single transaction's money, all in minor units.
+ * total should equal the net the transaction represents; the component fields
+ * (cash/bonus/gst/tds/etc.) explain how that total is composed.
+ */
 export interface IAmountBreakdown {
   cashAmount: number;
   instantBonus: number;
@@ -35,12 +46,14 @@ export interface ITransaction {
   type: TransactionType;
   status: TransactionStatus;
   amount: IAmountBreakdown;
+  /** Currency of this transaction; must match the wallet's currency. */
+  currency: Currency;
   remark?: string;
   deskId?: mongoose.Types.ObjectId;
   bankTransactionId?: mongoose.Types.ObjectId;
   gatewayTransactionId?: mongoose.Types.ObjectId;
-  createdOn: Date;
-  completedOn?: Date;
+  /** When the transaction settled (distinct from createdAt row-creation time). */
+  completedAt?: Date;
 }
 
 export interface ITransactionDocument extends ITransaction, Document {}
@@ -81,6 +94,12 @@ const TransactionSchema = new Schema<ITransactionDocument>(
       type: AmountBreakdownSchema,
       required: true,
     },
+    currency: {
+      type: String,
+      enum: SUPPORTED_CURRENCIES,
+      default: DEFAULT_CURRENCY,
+      required: true,
+    },
     remark: {
       type: String,
       trim: true,
@@ -100,26 +119,40 @@ const TransactionSchema = new Schema<ITransactionDocument>(
       ref: 'GatewayTransaction',
       default: null,
     },
-    createdOn: {
-      type: Date,
-      default: Date.now,
-    },
-    completedOn: {
+    completedAt: {
       type: Date,
       default: null,
     },
   },
   {
-    timestamps: false,
+    timestamps: true,
   }
 );
 
-TransactionSchema.index({ walletId: 1, createdOn: -1 });
+/**
+ * Guard: every money field in the breakdown must be a whole number (minor units).
+ * Catches a float slipping in without toMinor() loudly at write time.
+ */
+TransactionSchema.pre('save', function (next) {
+  const a = this.amount;
+  const fields: Array<keyof IAmountBreakdown> = [
+    'cashAmount', 'instantBonus', 'lockedBonus', 'gst', 'tds', 'otherDeductions', 'total',
+  ];
+  for (const f of fields) {
+    const v = a[f];
+    if (!Number.isInteger(v)) {
+      return next(new Error(`WalletTransaction.amount.${f} must be an integer (minor units); got ${v}`));
+    }
+  }
+  next();
+});
+
+TransactionSchema.index({ walletId: 1, createdAt: -1 });
 TransactionSchema.index({ walletId: 1, type: 1 });
 TransactionSchema.index({ walletId: 1, status: 1 });
 
-const Transaction: Model<ITransactionDocument> =
-  mongoose.models.Transaction ||
-  mongoose.model<ITransactionDocument>('Transaction', TransactionSchema);
+const WalletTransaction: Model<ITransactionDocument> =
+  mongoose.models.WalletTransaction ||
+  mongoose.model<ITransactionDocument>('WalletTransaction', TransactionSchema);
 
-export default Transaction;
+export default WalletTransaction;

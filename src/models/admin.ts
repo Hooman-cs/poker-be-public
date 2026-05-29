@@ -1,8 +1,10 @@
 /**
  * @fileoverview Admin Model
- * Handles admin account authentication and management.
- * Admin login is via email and password.
- * JWT is stored in httpOnly cookie, not in the database.
+ * Handles admin account authentication. Separate from User by design (different
+ * auth method, different data, different lifecycle — see TASKS.md for the rationale).
+ *
+ * Auth: email + password (bcrypt). JWT is delivered to the browser via an
+ * httpOnly cookie, never stored in the database.
  */
 
 import mongoose, { Schema, Document, Model } from 'mongoose';
@@ -16,8 +18,6 @@ export interface IAdmin {
   role: 'admin';
   status: 'active' | 'inactive';
   lastLogin: Date | null;
-  createdAt?: Date;
-  updatedAt?: Date;
 }
 
 export interface IAdminDocument extends IAdmin, Document {
@@ -34,7 +34,7 @@ const AdminSchema = new Schema<IAdminDocument>(
     email: {
       type: String,
       required: [true, 'Email is required'],
-      unique: true,
+      unique: true, // builds its own index
       trim: true,
       lowercase: true,
       validate: {
@@ -46,7 +46,7 @@ const AdminSchema = new Schema<IAdminDocument>(
     mobile: {
       type: String,
       required: [true, 'Mobile number is required'],
-      unique: true,
+      unique: true, // builds its own index
       validate: {
         validator: (v: string) => /^[0-9]{10}$/.test(v),
         message: (props: { value: string }) =>
@@ -78,6 +78,7 @@ const AdminSchema = new Schema<IAdminDocument>(
   }
 );
 
+/** Hash the password on save when it has been set or changed. */
 AdminSchema.pre<IAdminDocument>('save', async function (next) {
   if (!this.isModified('password')) return next();
   const salt = await bcrypt.genSalt(12);
@@ -85,6 +86,7 @@ AdminSchema.pre<IAdminDocument>('save', async function (next) {
   next();
 });
 
+/** Constant-time-ish password check via bcrypt. */
 AdminSchema.methods.comparePassword = async function (
   candidatePassword: string
 ): Promise<boolean> {

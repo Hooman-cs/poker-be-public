@@ -1,26 +1,30 @@
 /**
  * @fileoverview Gateway Transaction Model
- * Records payment gateway transactions for wallet deposits.
- * Currently supports Razorpay, designed to support multiple gateways in future.
- * Withdrawals are handled via manual bank transactions, not payment gateway.
+ * Records payment-gateway transactions for wallet deposits.
+ * Currently supports Razorpay; designed to allow more gateways later.
+ * Withdrawals are handled via manual bank transactions, not the payment gateway.
+ *
+ * amount is stored in INTEGER minor units (paise/cents), never a float.
+ * Success state is 'completed' (standardized across all transaction models —
+ * the old 'successful' value has been removed).
  */
 
 import mongoose, { Schema, Document, Model } from 'mongoose';
+import { SUPPORTED_CURRENCIES, DEFAULT_CURRENCY, Currency } from '@/config/constants';
 
 export type GatewayName = 'razorpay' | 'stripe';
-export type GatewayTransactionStatus = 'created' | 'pending' | 'successful' | 'failed';
+export type GatewayTransactionStatus = 'created' | 'pending' | 'completed' | 'failed';
 
 export interface IGatewayTransaction {
   userId: mongoose.Types.ObjectId;
   gateway: GatewayName;
+  /** Amount in minor units. */
   amount: number;
-  currency: string;
+  currency: Currency;
   status: GatewayTransactionStatus;
   gatewayOrderId?: string;
   gatewayPaymentId?: string;
   gatewaySignature?: string;
-  createdAt?: Date;
-  updatedAt?: Date;
 }
 
 export interface IGatewayTransactionDocument extends IGatewayTransaction, Document {}
@@ -41,18 +45,17 @@ const GatewayTransactionSchema = new Schema<IGatewayTransactionDocument>(
     amount: {
       type: Number,
       required: [true, 'Amount is required'],
-      min: [1, 'Amount must be at least 1'],
+      min: [1, 'Amount must be at least 1 minor unit'],
     },
     currency: {
       type: String,
-      required: [true, 'Currency is required'],
-      uppercase: true,
-      trim: true,
-      default: 'INR',
+      enum: SUPPORTED_CURRENCIES,
+      default: DEFAULT_CURRENCY,
+      required: true,
     },
     status: {
       type: String,
-      enum: ['created', 'pending', 'successful', 'failed'],
+      enum: ['created', 'pending', 'completed', 'failed'],
       default: 'created',
       required: true,
     },
@@ -74,15 +77,20 @@ const GatewayTransactionSchema = new Schema<IGatewayTransactionDocument>(
   }
 );
 
+/** Guard: amount must be a whole number of minor units. */
+GatewayTransactionSchema.pre('save', function (next) {
+  if (!Number.isInteger(this.amount)) {
+    return next(new Error(`GatewayTransaction.amount must be an integer (minor units); got ${this.amount}`));
+  }
+  next();
+});
+
 GatewayTransactionSchema.index({ userId: 1, createdAt: -1 });
 GatewayTransactionSchema.index({ gatewayOrderId: 1 });
 GatewayTransactionSchema.index({ userId: 1, status: 1 });
 
 const GatewayTransaction: Model<IGatewayTransactionDocument> =
   mongoose.models.GatewayTransaction ||
-  mongoose.model<IGatewayTransactionDocument>(
-    'GatewayTransaction',
-    GatewayTransactionSchema
-  );
+  mongoose.model<IGatewayTransactionDocument>('GatewayTransaction', GatewayTransactionSchema);
 
 export default GatewayTransaction;
