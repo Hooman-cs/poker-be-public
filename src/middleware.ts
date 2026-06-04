@@ -1,3 +1,25 @@
+/**
+ * @fileoverview Next.js middleware — cheap auth gate for admin routes and pages.
+ *
+ * Runs at the Edge (no Node built-ins available), so JWT verification uses
+ * `jose`, not the Node `jsonwebtoken` library used elsewhere.
+ *
+ * RESPONSIBILITIES (deliberately narrow):
+ *   - Protect `/admin/**` pages: unauthenticated requests redirect to the login page.
+ *   - Bounce authenticated users away from `/auth/login` to the admin overview.
+ *
+ * EXPLICITLY NOT THIS LAYER'S JOB:
+ *   - Verifying `role === 'admin'` strictly (a user-role token would pass the
+ *     middleware gate). That check happens at the route level via `requireAdmin`,
+ *     which also enforces `status === 'active'` via a DB lookup.
+ *   - Logging auth failures. A normal expired-token flow IS a verification
+ *     failure; logging it would be operational noise. Real auth debugging
+ *     belongs in a proper logger, not here.
+ *   - Anything to do with the socket server. Sockets run on port 3001 via the
+ *     standalone Socket.io server; Next.js middleware never sees those requests.
+ *     The previous `/api/socket` matcher entry and CORS branch were dead code.
+ */
+
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { jwtVerify } from 'jose';
@@ -5,72 +27,58 @@ import { jwtVerify } from 'jose';
 const secret = new TextEncoder().encode(process.env.JWT_SECRET);
 
 export const config = {
-  matcher: ['/admin/:path*', '/auth/login', '/api/socket'],
+  matcher: ['/admin/:path*', '/auth/login'],
 };
+
+const LOGIN_PATH = '/auth/login';
+const POST_LOGIN_LANDING = '/admin/overview';
+
+/**
+ * Reads the `token` httpOnly cookie and confirms it's a structurally-valid JWT
+ * with both a `userId` and a `role` claim. Returns true ONLY if all of that
+ * holds. Any failure (missing cookie, bad signature, expired, missing claim)
+ * returns false silently — this gate has one job and "report why" isn't part
+ * of it.
+ */
+async function hasValidAuthToken(req: NextRequest): Promise<boolean> {
+  const token = req.cookies.get('token')?.value;
+  if (!token) return false;
+
+  try {
+    const { payload } = await jwtVerify(token, secret);
+    return Boolean(payload.userId && payload.role);
+  } catch {
+    // Any failure — expired, invalid signature, malformed — means "not auth'd"
+    // from this gate's perspective. Route-level `requireAdmin` will produce
+    // a specific 401 with a code if needed; here we just route the redirect.
+    return false;
+  }
+}
 
 export async function middleware(req: NextRequest) {
   const path = req.nextUrl.pathname;
-  const res = NextResponse.next();
-  const isPrivatePath = path.startsWith('/admin'); // Path that requires authentication
-  // Check if token is present
- if(isPrivatePath || path === '/auth/login' ){ 
- console.log("hii how are you it is not the",2345);
-  const token = req.cookies.get('token')?.value || '';
-   
-  if (token) {
-    try {
-      // Verify the token
-      const { payload } = await jwtVerify(token, secret);
-    
+  const isAdminPath = path.startsWith('/admin');
+  const isLoginPath = path === LOGIN_PATH;
 
-      // Check if token contains required fields (userId, role, etc.)
-      if (!payload.userId || !payload.role) { 
-
-        // If payload is missing key fields, redirect to login
-        if (path !== '/auth/login') {
-          return NextResponse.redirect(new URL('/auth/login', req.url));
-        }
-      } else {
-        // Valid token, redirect to /chats if user is at /auth/login
-        if (path === '/auth/login') {
-          return NextResponse.redirect(new URL('/admin', req.url));
-        }
-
-        // If the path is a private path (requires authentication), proceed
-        if (isPrivatePath) {
-          return NextResponse.next();
-        }
-      }
-    } catch (error) {
-      console.log('Token verification failed:', error);
-      // If token verification fails, redirect to login
-      if (isPrivatePath && path !== '/auth/login') {
-        return NextResponse.redirect(new URL('/auth/login', req.url));
-      }
-    }
+  // The matcher already filters to these two surfaces, but checking
+  // defensively here keeps the function self-describing and would survive
+  // a future matcher widening.
+  if (!isAdminPath && !isLoginPath) {
+    return NextResponse.next();
   }
-   else {
-    // If no token is found, redirect to login for private paths
-    if (isPrivatePath && path !== '/auth/login') {
-      console.log('No token found, redirecting to login...');
-      return NextResponse.redirect(new URL('/auth/login', req.url));
-    }
+
+  const isAuthed = await hasValidAuthToken(req);
+
+  // Authenticated users on the login page get bounced to the admin landing.
+  // This prevents the awkward "log in again while already logged in" loop.
+  if (isLoginPath && isAuthed) {
+    return NextResponse.redirect(new URL(POST_LOGIN_LANDING, req.url));
   }
- }
- else if(path === '/api/socket'){ 
-  const origin = req.headers.get('origin'); 
 
-  // Allow CORS for all origins
-  res.headers.append('Access-Control-Allow-Origin', '*');
-  res.headers.append('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.headers.append('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.headers.append('Access-Control-Allow-Credentials', 'true'); // Allow credentials
+  // Unauthenticated requests to an admin page redirect to login.
+  if (isAdminPath && !isAuthed) {
+    return NextResponse.redirect(new URL(LOGIN_PATH, req.url));
+  }
 
-  // Handle OPTIONS preflight requests
-  
-  return res;
-  
- }  
-  // Allow request to proceed if no conditions above matched
   return NextResponse.next();
 }

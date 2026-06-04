@@ -39,7 +39,7 @@ import {
 import { calculatePots } from '@/engine/potCalculator';
 import { evaluatePots } from '@/engine/handEvaluator';
 import { PRACTICE_STARTING_STACK_MINOR } from '@/config/constants';
-import type { PlayerAction } from '@/models/pokerDesk';
+import type { PlayerAction, IGamePlayer } from '@/models/pokerDesk';
 
 // =============================================================================
 // Custom error types
@@ -172,6 +172,89 @@ function isCashMode(modeName: string): boolean {
   return modeName === 'cash';
 }
 
+/**
+ * Schema minimum — the lowest player count the engine can correctly play.
+ * Below this, heads-up acting-order rules (which we don't implement) would
+ * be needed. Used as the "warm game" gate: once a desk has started its first
+ * hand, subsequent hands only need this many players, not the admin's
+ * configured minToStart. See LOGS.md 2026-06-01 for the cold-vs-warm gate design.
+ */
+
+/**
+ * Force-closes a desk: returns all remaining seated players' chips to their
+ * wallets (cash mode), removes all seats, and sets desk.status = 'closed'.
+ *
+ * Called when the desk's seated player count drops below desk.minToContinue
+ * either between hands or after a hand completes via showdown. The desk
+ * transitions to 'closed' and does not accept new hands or new seats.
+ *
+ * IMPORTANT: this function must be called from WITHIN an existing withDeskLock
+ * scope — it does NOT acquire the lock itself. It opens its own Mongo session
+ * for the wallet-credit transaction.
+ *
+ * Players removed by this function are "forced to leave" — their chips return
+ * to their wallets with a 'deskWithdraw' audit trail, same as a voluntary leave.
+ */
+async function forceCloseDesk(desk: IPokerDeskDocument): Promise<void> {
+  const seatsToRefund = desk.seats.filter(
+    (s) => s.balanceAtTable > 0 && isCashMode(desk.mode)
+  );
+
+  if (seatsToRefund.length > 0) {
+    const session: ClientSession = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        for (const seat of seatsToRefund) {
+          const wallet = await Wallet.findOne({ userId: seat.userId }).session(session);
+          if (!wallet) {
+            // Shouldn't happen — every seated player has a wallet. Log and
+            // continue rather than crashing the closure (their chips are
+            // unfortunately lost, but the desk still closes).
+            // eslint-disable-next-line no-console
+            console.error(
+              `[forceCloseDesk] wallet not found for userId ${seat.userId}; ` +
+                `${seat.balanceAtTable} minor units lost`
+            );
+            continue;
+          }
+
+          wallet.balance += seat.balanceAtTable;
+          await wallet.save({ session });
+
+          await WalletTransaction.create(
+            [
+              {
+                walletId: wallet._id,
+                type: 'deskWithdraw',
+                status: 'completed',
+                amount: {
+                  cashAmount: seat.balanceAtTable,
+                  total: seat.balanceAtTable,
+                },
+                currency: desk.currency,
+                deskId: desk._id,
+                completedAt: new Date(),
+              },
+            ],
+            { session }
+          );
+        }
+
+        desk.seats = [] as unknown as typeof desk.seats;
+        desk.status = 'closed';
+        await desk.save({ session });
+      });
+    } finally {
+      await session.endSession();
+    }
+  } else {
+    // No chips to refund (practice mode, or everyone had 0 balance).
+    desk.seats = [] as unknown as typeof desk.seats;
+    desk.status = 'closed';
+    await desk.save();
+  }
+}
+
 // =============================================================================
 // Seat / wallet operations
 // =============================================================================
@@ -197,6 +280,7 @@ export interface AddUserToSeatInput {
  *
  * Rejects if: desk not found, user already seated, seat taken, desk full,
  * buy-in out of range (cash), or wallet has insufficient balance (cash).
+ * Also rejects if the desk's status is 'closed' (post-closure, no new seats).
  */
 export async function addUserToSeat(
   input: AddUserToSeatInput
@@ -204,6 +288,10 @@ export async function addUserToSeat(
   return withDeskLock(input.deskId, async () => {
     const desk = await PokerDesk.findById(input.deskId);
     if (!desk) throw new NotFoundError('Desk', input.deskId);
+
+    if (desk.status === 'closed') {
+      throw new InvalidStateError('Desk is closed — no new players can be seated');
+    }
 
     const userIdStr = input.userId.toString();
     const userObjectId = new Types.ObjectId(userIdStr);
@@ -458,6 +546,24 @@ export async function userLeavesSeat(
       await desk.save();
     }
 
+    // Between-hands closure check: if no game is in progress AND the desk
+    // has been "warm" (at least one hand played) AND the seated player count
+    // has dropped below desk.minToContinue, force-close the desk.
+    //
+    // Mid-hand leaves don't trigger closure here — the hand continues via
+    // the needsShowdown path, and the post-showdown closure check in
+    // showdown() handles it after the hand resolves.
+    //
+    // Cold desks (firstGameStartedAt === null) are NOT closed — they're just
+    // tables waiting for enough players. Only warm desks decay to closure.
+    if (
+      !desk.currentGame &&
+      desk.firstGameStartedAt &&
+      desk.seats.length < desk.minToContinue
+    ) {
+      await forceCloseDesk(desk);
+    }
+
     return { desk, needsShowdown };
   });
 }
@@ -576,7 +682,7 @@ export interface CreateGameInput {
 
 /**
  * Starts a new game at a desk. Requires:
- *   - desk has at least `minPlayerCount` active seats with balance >= minBuyIn,
+ *   - desk has at least `minToStart` active seats with balance >= minBuyIn,
  *   - no game currently in progress (currentGameStatus is 'waiting' or 'finished').
  *
  * Calls engine's initializeGameState (which handles deck/cards/blinds/antes),
@@ -585,7 +691,7 @@ export interface CreateGameInput {
  *
  * Seats with insufficient balance to meet minBuyIn are filtered by the engine
  * (they remain at the desk but don't participate). If the resulting player
- * count is below minPlayerCount, we throw and don't start.
+ * count is below minToStart, we throw and don't start.
  */
 export async function createGame(
   input: CreateGameInput
@@ -594,19 +700,64 @@ export async function createGame(
     const desk = await PokerDesk.findById(input.deskId);
     if (!desk) throw new NotFoundError('Desk', input.deskId);
 
+    if (desk.status === 'closed') {
+      throw new InvalidStateError('Desk is closed — no new games can start');
+    }
+
     if (desk.currentGameStatus === 'in-progress') {
       throw new InvalidStateError('A game is already in progress at this desk');
     }
 
     // Engine filters to active seats with balance >= minBuyIn; we precheck
     // the count here so we throw a meaningful error before initializing.
+    //
+    // Cold vs warm gate (see LOGS.md 2026-06-01):
+    //   - Cold desk (firstGameStartedAt === null): the desk has never had a hand.
+    //     Gate uses the admin-configured minToStart (e.g. 4).
+    //   - Warm desk (firstGameStartedAt !== null): the desk has had at least one
+    //     hand. Gate relaxes to desk.minToContinue (3 — the schema floor).
+    //     This lets the game continue naturally as players leave, down to 3.
     const eligibleCount = desk.seats.filter(
       (s) => s.status === 'active' && s.balanceAtTable >= desk.minBuyIn
     ).length;
-    if (eligibleCount < desk.minPlayerCount) {
+    const minRequired = desk.firstGameStartedAt
+      ? desk.minToContinue
+      : desk.minToStart;
+    if (eligibleCount < minRequired) {
       throw new InvalidStateError(
-        `Not enough eligible players: need ${desk.minPlayerCount}, have ${eligibleCount}`
+        `Not enough eligible players: need ${minRequired}, have ${eligibleCount}`
       );
+    }
+
+    // Determine the button position for this hand. Two cases:
+    //   - First hand on this desk (buttonSeatNumber is null): pick the
+    //     lowest-numbered eligible seat as the initial button. Per LOGS.md
+    //     2026-06-01 (Choice 3A: "first seated player").
+    //   - Subsequent hand: advance the button clockwise (increasing seat
+    //     number, wrapping) to the next eligible seat.
+    // Empty seats and ineligible seats (insufficient balance) are skipped.
+    const eligibleByNumber = desk.seats
+      .filter((s) => s.status === 'active' && s.balanceAtTable >= desk.minBuyIn)
+      .sort((a, b) => a.seatNumber - b.seatNumber);
+
+    let buttonSeatNumber: number;
+    if (desk.buttonSeatNumber === null || desk.buttonSeatNumber === undefined) {
+      // First hand: button = lowest-numbered eligible seat.
+      buttonSeatNumber = eligibleByNumber[0].seatNumber;
+    } else {
+      // Advance: find the next eligible seat strictly greater than the
+      // previous button's seatNumber; wrap around if needed.
+      const prev = desk.buttonSeatNumber;
+      const next = eligibleByNumber.find((s) => s.seatNumber > prev)
+        ?? eligibleByNumber[0];
+      buttonSeatNumber = next.seatNumber;
+    }
+    desk.buttonSeatNumber = buttonSeatNumber;
+
+    // Mark the desk as "warm" on first hand. Subsequent createGame calls
+    // use desk.minToContinue (3) instead of desk.minToStart.
+    if (!desk.firstGameStartedAt) {
+      desk.firstGameStartedAt = new Date();
     }
 
     // Engine call — pure, returns the initial IPokerGame plus a deck we
@@ -617,7 +768,8 @@ export async function createGame(
       desk.bType === 'blinds' ? 'blinds' : 'antes',
       desk.stake,
       desk.gameType,
-      desk.minBuyIn
+      desk.minBuyIn,
+      buttonSeatNumber
     );
 
     // Apply blind/ante deductions back to the seat docs so seat.balanceAtTable
@@ -727,8 +879,32 @@ export async function handlePlayerAction(
 
     // Engine call — pure, returns updated player/seat/totalBet + the action
     // record to append to the current round.
+    //
+    // IMPORTANT: `player` is a Mongoose embedded subdocument. The engine spreads
+    // it internally (`{ ...player }`), and spreading a Mongoose subdoc yields
+    // the doc's Mongoose internals — NOT its data fields. That produces
+    // `updatedPlayer.balanceAtTable === undefined`, then `undefined - amount = NaN`,
+    // then a Cast-to-Number validation error on save. Convert to a plain object
+    // before crossing the service↔engine boundary so the engine's pure-data
+    // contract is preserved.
+    //
+    // Explicit field-by-field construction (rather than a cast + .toObject())
+    // makes the runtime/type boundary visible at the call site and forces
+    // re-review if IGamePlayer ever gains a new field.
+    //
+    // [INVARIANT] The service is the ONLY place Mongoose docs meet the engine.
+    // Every doc/subdoc passed into the engine must be a plain IGamePlayer object.
+    const plainPlayer: IGamePlayer = {
+      userId: player.userId,
+      balanceAtTable: player.balanceAtTable,
+      status: player.status,
+      totalBet: player.totalBet,
+      holeCards: player.holeCards,
+      role: player.role,
+    };
+
     const result = processPlayerAction(
-      player,
+      plainPlayer,
       seat.balanceAtTable,
       game.totalBet,
       currentRound,
@@ -757,10 +933,16 @@ export async function handlePlayerAction(
     } else if (progression.type === 'nextRound') {
       // Auto-advance: engine deals community cards, resets turn. We apply
       // the result; no second call required from the caller.
+      //
+      // buttonSeatNumber is non-null here because createGame set it before
+      // any handlePlayerAction could run. The `??` fallback to 1 is
+      // defensive — should never trigger in normal flow.
       const advanced = engineAdvanceRound(
         currentRound.name,
         game.players,
-        game.communityCards
+        game.communityCards,
+        desk.seats as unknown as ISeat[],
+        desk.buttonSeatNumber ?? 1
       );
       game.rounds.push(advanced.newRound);
       game.communityCards.push(...advanced.newCommunityCards);
@@ -813,7 +995,9 @@ export async function advanceGameRound(
     const advanced = engineAdvanceRound(
       currentRound.name,
       game.players,
-      game.communityCards
+      game.communityCards,
+      desk.seats as unknown as ISeat[],
+      desk.buttonSeatNumber ?? 1
     );
     game.rounds.push(advanced.newRound);
     game.communityCards.push(...advanced.newCommunityCards);
@@ -1022,6 +1206,20 @@ export async function showdown(
       throw new InvalidStateError('Showdown completed but no archive was created');
     }
 
+    // Post-hand closure check: if the desk's remaining seated player count
+    // has dropped below desk.minToContinue, force-close the desk. This
+    // returns all remaining players' chips to their wallets and sets status
+    // to 'closed'. The hand that just finished is archived normally; only
+    // the NEXT hand is blocked.
+    //
+    // Count uses desk.seats.length (seated players, regardless of balance).
+    // A player who went all-in and lost has balanceAtTable === 0 but is still
+    // seated — they count. They'll be force-left with a 0-chip refund (no-op
+    // on their wallet).
+    if (desk.seats.length < desk.minToContinue) {
+      await forceCloseDesk(desk);
+    }
+
     // Shape per-pot winner output for the socket layer.
     const potResults = evaluatedPots.map((pot, i) => ({
       potNumber: i + 1,
@@ -1042,6 +1240,7 @@ export async function showdown(
 // Next phase: API routes (Phase 3) and socket transport (Phase 5) call into
 // these service functions; they don't reimplement game logic or wallet ops.
 // =============================================================================
+
 
 
 // /**
@@ -1070,7 +1269,6 @@ export async function showdown(
 // import { Mutex } from 'async-mutex';
 
 // import PokerDesk, { IPokerDeskDocument, ISeat } from '@/models/pokerDesk';
-// import PokerMode from '@/models/pokerMode';
 // import Wallet from '@/models/wallet';
 // import WalletTransaction from '@/models/walletTransaction';
 // import PokerGameArchive from '@/models/pokerGameArchive';
@@ -1081,12 +1279,12 @@ export async function showdown(
 //   processPlayerAction,
 //   determineRoundProgression,
 //   advanceRound as engineAdvanceRound,
-//   calculateCallAmount,
 //   buildArchiveData,
 // } from '@/engine/gameEngine';
 // import { calculatePots } from '@/engine/potCalculator';
 // import { evaluatePots } from '@/engine/handEvaluator';
-// import type { PlayerAction } from '@/models/pokerDesk';
+// import { PRACTICE_STARTING_STACK_MINOR } from '@/config/constants';
+// import type { PlayerAction, IGamePlayer } from '@/models/pokerDesk';
 
 // // =============================================================================
 // // Custom error types
@@ -1238,9 +1436,9 @@ export async function showdown(
 // /**
 //  * Seats a user at a desk.
 //  *  - Cash mode: debits wallet, creates seat, records WalletTransaction — atomic.
-//  *  - Practice mode: creates seat at PRACTICE_STARTING_STACK_MINOR (passed in
-//  *    by the caller — practice flow ignores the requested buyInAmount and
-//  *    supplies the constant).
+//  *    The caller's `buyInAmount` is validated against [minBuyIn, maxBuyIn].
+//  *  - Practice mode: creates seat with `PRACTICE_STARTING_STACK_MINOR` ALWAYS.
+//  *    The caller's `buyInAmount` is ignored — practice stacks are fixed.
 //  *
 //  * Rejects if: desk not found, user already seated, seat taken, desk full,
 //  * buy-in out of range (cash), or wallet has insufficient balance (cash).
@@ -1346,13 +1544,16 @@ export async function showdown(
 //         await session.endSession();
 //       }
 //     } else {
-//       // Practice mode: no wallet, no transaction. Caller supplies the practice
-//       // starting stack (PRACTICE_STARTING_STACK_MINOR) as buyInAmount.
+//       // Practice mode: no wallet, no transaction, no caller-supplied amount.
+//       // The buy-in is ALWAYS PRACTICE_STARTING_STACK_MINOR regardless of what
+//       // the caller passed in. This is a defense against misuse — a buggy or
+//       // malicious caller can't grant themselves a giant practice stack.
+//       const practiceStack = PRACTICE_STARTING_STACK_MINOR;
 //       desk.seats.push({
 //         userId: userObjectId,
 //         seatNumber: input.seatNumber,
-//         buyInAmount: input.buyInAmount,
-//         balanceAtTable: input.buyInAmount,
+//         buyInAmount: practiceStack,
+//         balanceAtTable: practiceStack,
 //         status: 'active',
 //         joinedAt: new Date(),
 //       } as ISeat);
@@ -1368,6 +1569,15 @@ export async function showdown(
 //   userId: Types.ObjectId | string;
 // }
 
+// export interface UserLeavesSeatResult {
+//   desk: IPokerDeskDocument;
+//   /**
+//    * True if the leave collapsed the table to a single remaining
+//    * active/all-in player and the caller must invoke `showdown(deskId)` next.
+//    */
+//   needsShowdown: boolean;
+// }
+
 // /**
 //  * Removes a user from a desk and returns their `balanceAtTable` to the wallet
 //  * in cash mode (practice mode just removes the seat).
@@ -1377,12 +1587,21 @@ export async function showdown(
 //  * mirrors the original code; a friendlier sit-out flow can be added in
 //  * Phase 2 if product wants.
 //  *
+//  * Mid-hand bookkeeping (the part that's easy to forget):
+//  *   - If the leaver was the current turn player, advance the turn to the
+//  *     next active player. Otherwise the game stalls — every subsequent
+//  *     handlePlayerAction would reject "it's not your turn" because the turn
+//  *     pointer still points at a folded player.
+//  *   - If the leave collapses the table to a single active/all-in player,
+//  *     the hand should end immediately. We signal this with `needsShowdown`;
+//  *     the caller invokes `showdown(deskId)` to finalize.
+//  *
 //  * Cash mode is fully atomic: seat removal + wallet credit + audit row in one
 //  * Mongo transaction. If the wallet write fails, the seat is not removed.
 //  */
 // export async function userLeavesSeat(
 //   input: UserLeavesSeatInput
-// ): Promise<IPokerDeskDocument> {
+// ): Promise<UserLeavesSeatResult> {
 //   return withDeskLock(input.deskId, async () => {
 //     const desk = await PokerDesk.findById(input.deskId);
 //     if (!desk) throw new NotFoundError('Desk', input.deskId);
@@ -1402,16 +1621,36 @@ export async function showdown(
 //     const deskMode = desk.mode;             // 'cash' | 'practice'
 //     const deskCurrency = desk.currency;     // 'INR' | 'USD'
 
-//     // If a hand is in flight and this user is in it, mark them folded so the
-//     // engine cleanly excludes them on the next progression check. The actual
-//     // round-progression handling is the lifecycle layer's job (Turn 2); we
-//     // just leave a clean game state behind.
+//     let needsShowdown = false;
+
+//     // Mid-hand handling: fold the leaver, advance turn if needed, check
+//     // whether the table just collapsed to a single survivor.
 //     if (desk.currentGame) {
-//       const player = desk.currentGame.players.find((p) =>
+//       const game = desk.currentGame;
+//       const player = game.players.find((p) =>
 //         p.userId.equals(userObjectId)
 //       );
 //       if (player && player.status === 'active') {
 //         player.status = 'folded';
+
+//         // If the leaver was about to act, advance to the next active player
+//         // so the hand doesn't stall on a folded turn pointer.
+//         if (
+//           game.currentTurnPlayer &&
+//           game.currentTurnPlayer.equals(userObjectId)
+//         ) {
+//           const nextActive = game.players.find((p) => p.status === 'active');
+//           game.currentTurnPlayer = nextActive ? nextActive.userId : null;
+//         }
+
+//         // If only one active/all-in player remains, the hand resolves to them.
+//         const remaining = game.players.filter(
+//           (p) => p.status === 'active' || p.status === 'all-in'
+//         );
+//         if (remaining.length <= 1) {
+//           game.currentTurnPlayer = null;
+//           needsShowdown = true;
+//         }
 //       }
 //     }
 
@@ -1464,7 +1703,7 @@ export async function showdown(
 //       await desk.save();
 //     }
 
-//     return desk;
+//     return { desk, needsShowdown };
 //   });
 // }
 
@@ -1615,6 +1854,31 @@ export async function showdown(
 //       );
 //     }
 
+//     // Determine the button position for this hand. Two cases:
+//     //   - First hand on this desk (buttonSeatNumber is null): pick the
+//     //     lowest-numbered eligible seat as the initial button. Per LOGS.md
+//     //     2026-06-01 (Choice 3A: "first seated player").
+//     //   - Subsequent hand: advance the button clockwise (increasing seat
+//     //     number, wrapping) to the next eligible seat.
+//     // Empty seats and ineligible seats (insufficient balance) are skipped.
+//     const eligibleByNumber = desk.seats
+//       .filter((s) => s.status === 'active' && s.balanceAtTable >= desk.minBuyIn)
+//       .sort((a, b) => a.seatNumber - b.seatNumber);
+
+//     let buttonSeatNumber: number;
+//     if (desk.buttonSeatNumber === null || desk.buttonSeatNumber === undefined) {
+//       // First hand: button = lowest-numbered eligible seat.
+//       buttonSeatNumber = eligibleByNumber[0].seatNumber;
+//     } else {
+//       // Advance: find the next eligible seat strictly greater than the
+//       // previous button's seatNumber; wrap around if needed.
+//       const prev = desk.buttonSeatNumber;
+//       const next = eligibleByNumber.find((s) => s.seatNumber > prev)
+//         ?? eligibleByNumber[0];
+//       buttonSeatNumber = next.seatNumber;
+//     }
+//     desk.buttonSeatNumber = buttonSeatNumber;
+
 //     // Engine call — pure, returns the initial IPokerGame plus a deck we
 //     // discard (the deck isn't persisted; only the dealt cards on players
 //     // and the empty communityCards array are).
@@ -1623,7 +1887,8 @@ export async function showdown(
 //       desk.bType === 'blinds' ? 'blinds' : 'antes',
 //       desk.stake,
 //       desk.gameType,
-//       desk.minBuyIn
+//       desk.minBuyIn,
+//       buttonSeatNumber
 //     );
 
 //     // Apply blind/ante deductions back to the seat docs so seat.balanceAtTable
@@ -1733,8 +1998,32 @@ export async function showdown(
 
 //     // Engine call — pure, returns updated player/seat/totalBet + the action
 //     // record to append to the current round.
+//     //
+//     // IMPORTANT: `player` is a Mongoose embedded subdocument. The engine spreads
+//     // it internally (`{ ...player }`), and spreading a Mongoose subdoc yields
+//     // the doc's Mongoose internals — NOT its data fields. That produces
+//     // `updatedPlayer.balanceAtTable === undefined`, then `undefined - amount = NaN`,
+//     // then a Cast-to-Number validation error on save. Convert to a plain object
+//     // before crossing the service↔engine boundary so the engine's pure-data
+//     // contract is preserved.
+//     //
+//     // Explicit field-by-field construction (rather than a cast + .toObject())
+//     // makes the runtime/type boundary visible at the call site and forces
+//     // re-review if IGamePlayer ever gains a new field.
+//     //
+//     // [INVARIANT] The service is the ONLY place Mongoose docs meet the engine.
+//     // Every doc/subdoc passed into the engine must be a plain IGamePlayer object.
+//     const plainPlayer: IGamePlayer = {
+//       userId: player.userId,
+//       balanceAtTable: player.balanceAtTable,
+//       status: player.status,
+//       totalBet: player.totalBet,
+//       holeCards: player.holeCards,
+//       role: player.role,
+//     };
+
 //     const result = processPlayerAction(
-//       player,
+//       plainPlayer,
 //       seat.balanceAtTable,
 //       game.totalBet,
 //       currentRound,
@@ -1763,10 +2052,16 @@ export async function showdown(
 //     } else if (progression.type === 'nextRound') {
 //       // Auto-advance: engine deals community cards, resets turn. We apply
 //       // the result; no second call required from the caller.
+//       //
+//       // buttonSeatNumber is non-null here because createGame set it before
+//       // any handlePlayerAction could run. The `??` fallback to 1 is
+//       // defensive — should never trigger in normal flow.
 //       const advanced = engineAdvanceRound(
 //         currentRound.name,
 //         game.players,
-//         game.communityCards
+//         game.communityCards,
+//         desk.seats as unknown as ISeat[],
+//         desk.buttonSeatNumber ?? 1
 //       );
 //       game.rounds.push(advanced.newRound);
 //       game.communityCards.push(...advanced.newCommunityCards);
@@ -1819,7 +2114,9 @@ export async function showdown(
 //     const advanced = engineAdvanceRound(
 //       currentRound.name,
 //       game.players,
-//       game.communityCards
+//       game.communityCards,
+//       desk.seats as unknown as ISeat[],
+//       desk.buttonSeatNumber ?? 1
 //     );
 //     game.rounds.push(advanced.newRound);
 //     game.communityCards.push(...advanced.newCommunityCards);
@@ -2042,3 +2339,9 @@ export async function showdown(
 //     return { desk, archive: createdArchive, potResults };
 //   });
 // }
+
+// // =============================================================================
+// // END OF FILE — Phase 0 task 0.8b complete.
+// // Next phase: API routes (Phase 3) and socket transport (Phase 5) call into
+// // these service functions; they don't reimplement game logic or wallet ops.
+// // =============================================================================

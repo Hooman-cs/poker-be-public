@@ -21,7 +21,7 @@ export type PlayerRole = 'sb' | 'bb' | 'player';
 export type PlayerAction = 'fold' | 'check' | 'call' | 'raise' | 'all-in';
 export type RoundName = 'pre-flop' | 'flop' | 'turn' | 'river' | 'showdown';
 export type GameStatus = 'waiting' | 'in-progress' | 'finished';
-export type DeskStatus = 'active' | 'disabled';
+export type DeskStatus = 'active' | 'disabled' | 'closed';
 export type BettingType = 'blinds' | 'antes';
 export type ModeType = 'cash' | 'practice';
 
@@ -112,13 +112,42 @@ export interface IPokerDesk {
   minBuyIn: number;
   /** Maximum buy-in, minor units. */
   maxBuyIn: number;
-  minPlayerCount: number;
+  /**
+   * Minimum eligible players required for the FIRST hand on this desk
+   * (cold-start gate). Admin-configurable. Schema floor: 3.
+   * Once the desk has played its first hand (firstGameStartedAt set), this
+   * gate no longer applies — subsequent hands use minToContinue.
+   */
+  minToStart: number;
+  /**
+   * Minimum eligible players to keep playing on a warm desk. Schema floor: 3.
+   * If the count drops below this between hands (or after a mid-hand collapse),
+   * the desk force-closes (see LOGS.md 2026-06-01).
+   */
+  minToContinue: number;
   maxPlayerCount: number;
   maxSeats: number;
   seats: ISeat[];
   observers: Types.ObjectId[];
   currentGame: IPokerGame | null;
   currentGameStatus: GameStatus;
+  /**
+   * Seat number (1..maxSeats) currently holding the dealer button. SB sits
+   * one seat clockwise of the button (or AT the button in heads-up — not
+   * supported per minToContinue >= 3). Null between desk creation and the
+   * first hand; set when the first hand starts.
+   *
+   * See LOGS.md 2026-06-01 for the rotation design. The button advances on
+   * every `createGame` call, skipping empty seats.
+   */
+  buttonSeatNumber: number | null;
+  /**
+   * Timestamp of when the first hand started on this desk. Null means the
+   * desk is "cold" — hasn't had a game yet. Once set, the desk is "warm":
+   * the createGame gate relaxes from admin-configured minToStart to the
+   * schema floor of 3. See LOGS.md for the cold/warm/closed state machine.
+   */
+  firstGameStartedAt: Date | null;
   /** Cumulative all-time buy-ins counter, minor units (not decremented on leave). */
   totalBuyIns: number;
 }
@@ -275,7 +304,7 @@ const PokerDeskSchema = new Schema<IPokerDeskDocument>(
     },
     gameType: {
       type: String,
-      enum: ["Texas Hold'em", 'Omaha', 'Seven-Card Stud', 'Razz', 'Five-Card Draw'],
+      enum: ["Texas Hold'em", 'Omaha'],
       required: [true, 'Game type is required'],
     },
     bType: {
@@ -297,7 +326,7 @@ const PokerDeskSchema = new Schema<IPokerDeskDocument>(
     },
     status: {
       type: String,
-      enum: ['active', 'disabled'],
+      enum: ['active', 'disabled', 'closed'],
       default: 'active',
       required: true,
     },
@@ -314,11 +343,19 @@ const PokerDeskSchema = new Schema<IPokerDeskDocument>(
       type: Number,
       required: [true, 'Maximum buy-in is required'],
     },
-    minPlayerCount: {
+    minToStart: {
       type: Number,
-      required: [true, 'Minimum player count is required'],
-      min: [2, 'Minimum players must be at least 2'],
-      default: 2,
+      required: [true, 'Minimum to start is required'],
+      // Schema floor 3 (heads-up not supported). Admin can raise this above 3.
+      min: [3, 'Minimum to start must be at least 3'],
+      default: 3,
+    },
+    minToContinue: {
+      type: Number,
+      required: [true, 'Minimum to continue is required'],
+      // Schema floor 3. Should not exceed minToStart (validated in pre-save).
+      min: [3, 'Minimum to continue must be at least 3'],
+      default: 3,
     },
     maxPlayerCount: {
       type: Number,
@@ -339,6 +376,12 @@ const PokerDeskSchema = new Schema<IPokerDeskDocument>(
       enum: ['waiting', 'in-progress', 'finished'],
       default: 'waiting',
     },
+    // Dealer button position (1..maxSeats). Null until first hand. Advanced
+    // by gameService.createGame on each new hand, skipping empty seats.
+    buttonSeatNumber: { type: Number, default: null, min: 1 },
+    // Null = cold desk (never had a game). Set on first createGame success.
+    // The cold/warm distinction governs which minimum-player gate applies.
+    firstGameStartedAt: { type: Date, default: null },
     totalBuyIns: { type: Number, default: 0, min: 0 },
   },
   {
@@ -351,8 +394,11 @@ PokerDeskSchema.index({ status: 1, currentGameStatus: 1 });
 
 /** Structural validation (player-count and buy-in sanity), plus integer-money guard. */
 PokerDeskSchema.pre('save', function (next) {
-  if (this.maxPlayerCount < this.minPlayerCount) {
-    return next(new Error('Max player count cannot be less than min player count.'));
+  if (this.maxPlayerCount < this.minToStart) {
+    return next(new Error('Max player count cannot be less than minToStart.'));
+  }
+  if (this.minToContinue > this.minToStart) {
+    return next(new Error('minToContinue cannot exceed minToStart.'));
   }
   if (this.maxBuyIn <= this.minBuyIn) {
     return next(new Error('Max buy-in must be greater than min buy-in.'));
