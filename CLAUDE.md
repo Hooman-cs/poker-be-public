@@ -12,22 +12,25 @@ Next.js 14 App Router, TypeScript only. This repo contains:
 - Admin-side Next.js frontend (`src/app/admin/**`).
 
 A separate user-side mobile app (which we own — `ApiCaller.js`) consumes
-the user-facing API. Those endpoint shapes are LOCKED.
+the user-facing API. Those endpoint shapes are LOCKED in `docs/USER_API_CHANGES.md`.
 
-Tech stack: Next.js 14, MongoDB/Mongoose, Socket.io (port 3001), Razorpay.
+Tech stack: Next.js 14, MongoDB/Mongoose, Socket.io (port 3001), Razorpay, Firebase Admin SDK.
 Environment: user works in **PowerShell / VS Code on Windows** (`P:\poker`).
+
+**Current phase: Phase 4 — Admin API.** Phase 3 (all 14 user endpoints) is complete.
+See TASKS.md Phase 4 for the task list (4.1–4.15).
 
 ---
 
 ## Source-of-truth hierarchy (resolve every conflict this way)
 
-1. **KEEP.md (5-level freeze system)** — defines what can and cannot be edited.
-2. **USER_API_CHANGES.md** + non-auth sections of `docs/user_api_contracts.pdf` — the mobile app contract.
-3. **TASKS.md** — the live work tracker.
-4. **CONTRACTS.md** — precise signatures for every cross-phase callable. Read before writing a caller.
-5. **ARCHITECTURE.md** — file structure and conventions.
-6. **LOGS.md** — decision history. Grep `[INVARIANT]` before touching anything.
-7. **FUTURE_V2.md** — deliberately deferred items. Do NOT implement these in v1.
+1. **`docs/KEEP.md` (5-level freeze system)** — defines what can and cannot be edited.
+2. **`docs/USER_API_CHANGES.md`** + non-auth sections of `docs/user_api_contracts.pdf` — the mobile app contract.
+3. **`docs/TASKS.md`** — the live work tracker.
+4. **`docs/CONTRACTS.md`** — precise signatures for every cross-phase callable. Read before writing a caller.
+5. **`docs/ARCHITECTURE.md`** — file structure and conventions.
+6. **`docs/LOGS.md`** — decision history. Grep `[INVARIANT]` before touching anything.
+7. **`docs/FUTURE_V2.md`** — deliberately deferred items. Do NOT implement these in v1.
 
 The previous developer's code is NOT authoritative. `docs/archive/` is historical only.
 
@@ -91,6 +94,13 @@ These caught 6 real bugs in Phase 1 from code that was "frozen."
 - **Round closure only counts active+all-in players.** Folded players' bets must be excluded from the "are all bets equal" check.
 - **Post-flop first-actor is button-relative** (first active seat clockwise of button). Not array-index-0.
 - **`desk.seats` is arrival-ordered, not seat-number-ordered.** Sort by `seatNumber` before any clockwise-walk logic.
+- **`authProviders.providerId`** is the correct field name for the auth provider user ID. Not `providerUserId`.
+- **Firebase UID, not Google OAuth sub.** The backend uses Firebase Admin SDK (`admin.auth().verifyIdToken()`). `providerId` stores the Firebase UID (`decoded.uid`), which is NOT the same as the Google OAuth `sub` claim.
+- **JWT `role` must be explicit.** `signToken`'s payload type makes `role` optional — it is a trap. Always pass `role: 'user'` or `role: 'admin'` explicitly.
+- **Only `status === 'active'` users get a JWT.** Both `'inactive'` and `'suspended'` are rejected with 403.
+- **WalletTransaction signup bonus:** `type: 'bonus'`, `remark: 'signupBonus'`. No `'signupBonus'` enum value exists.
+- **GST_MULTIPLIER = 1.28** (28% on base value — Indian online gaming rate). `cashAmount = Math.round(gross / 1.28)`. Never hardcode 0.18.
+- **AppConfig singleton** (`src/models/appConfig.ts`) controls `gstMultiplier` and `depositBonusRate`. Razorpay verify route reads it with fallback defaults (1.28 / 1.0) if no document exists.
 
 ---
 
@@ -180,10 +190,10 @@ Do not silently implement the wrong thing. Say: "I want to flag something before
 ## Docs update discipline
 
 After any Phase task is complete:
-- TASKS.md: mark the task `[x]`.
-- CONTRACTS.md: update the entry for any changed signature.
-- LOGS.md: add an `[INVARIANT]` entry if the change creates a new rule downstream phases must respect.
-- KEEP.md: update if a new file needs a freeze level assigned.
+- `docs/TASKS.md`: mark the task `[x]`.
+- `docs/CONTRACTS.md`: update the entry for any changed signature.
+- `docs/LOGS.md`: add an `[INVARIANT]` entry if the change creates a new rule downstream phases must respect.
+- `docs/KEEP.md`: update if a new file needs a freeze level assigned.
 
 Do NOT skip these updates. Docs that drift become lies, which is worse than no docs.
 

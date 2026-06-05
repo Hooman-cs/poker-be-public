@@ -73,7 +73,7 @@ export class AuthError extends Error {
 // the response mapper translates. This makes the API's error semantics
 // consistent across hundreds of endpoints and easy to audit (grep this table).
 
-/** All auth-failure codes from the two guards. All map to 401. */
+/** All auth-failure codes from the guards and Google verify. All map to 401. */
 const AUTH_CODES = new Set<string>([
   'MISSING_AUTH_HEADER',
   'INVALID_AUTH_SCHEME',
@@ -84,6 +84,7 @@ const AUTH_CODES = new Set<string>([
   'MISSING_AUTH_COOKIE',
   'ADMIN_NOT_FOUND',
   'ADMIN_NOT_ACTIVE',
+  'INVALID_GOOGLE_TOKEN',
 ]);
 
 /**
@@ -99,13 +100,28 @@ function statusForCode(code: string): number {
     // ServiceError variants (see services/gameService.ts)
     case 'NOT_FOUND':
     case 'NOT_SEATED':
+    case 'INVALID_BANK_ACCOUNT':
       return 404;
 
     case 'SEAT_TAKEN':
     case 'DESK_FULL':
     case 'ALREADY_SEATED':
+    case 'USERNAME_LOCKED':
+    case 'USERNAME_TAKEN':
       return 409;
 
+    case 'ACCOUNT_SUSPENDED':
+    case 'FORBIDDEN':
+      return 403;
+
+    case 'MISSING_ID_TOKEN':
+    case 'MISSING_USERNAME':
+    case 'BANK_LIMIT_REACHED':
+    case 'MISSING_BANK_FIELD':
+    case 'MISSING_IMAGE':
+    case 'INSUFFICIENT_BALANCE':
+    case 'INVALID_PAYMENT_SIGNATURE':
+    case 'PAYMENT_ALREADY_PROCESSED':
     case 'INSUFFICIENT_FUNDS':
     case 'BUY_IN_OUT_OF_RANGE':
     case 'INVALID_STATE':

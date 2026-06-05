@@ -2,10 +2,17 @@
   "permissions": {
     "allow": [
       "Bash(dir /s /b \"p:\\\\poker\\\\src\\\\models\" 2>nul)",
-      "Bash(dir /s /b \"p:\\\\poker\\\\src\\\\models\\\\\" && dir /s /b \"p:\\\\poker\\\\src\\\\engine\\\\\")"
+      "Bash(dir /s /b \"p:\\\\poker\\\\src\\\\models\\\\\" && dir /s /b \"p:\\\\poker\\\\src\\\\engine\\\\\")",
+      "Bash(npx tsx *)",
+      "Bash(Select-String \"required:\" src/models/user.ts)",
+      "Bash(Select-Object -First 40)",
+      "Bash(Select-String \"required:\" src/models/wallet.ts)",
+      "Bash(Select-String \"instantBonus|lockedBonus\" src/models/wallet.ts)",
+      "Bash(mkdir -p \"p:/poker/src/app/api/user/wallet\")"
     ],
     "additionalDirectories": [
-      "p:\\poker"
+      "p:\\poker",
+      "p:\\poker\\src\\app\\api\\user"
     ]
   }
 }

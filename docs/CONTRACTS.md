@@ -600,16 +600,677 @@ class AuthError extends Error {
 **INVARIANTS**
 - `[INVARIANT]` Only the two auth guards throw `AuthError`. New auth-failure
   codes are added by extending the guards, not by introducing new throw sites.
+  Exception: `googleVerify.ts` and `route.ts` also throw `AuthError` for
+  Google-token failure and suspended accounts — added Phase 3.1 with matching
+  entries in `statusForCode`.
 
-# PHASE 3 — User API (STATUS: DRAFT — not built yet)
+# PHASE 3 — User API (STATUS: IN PROGRESS)
 
 Each route gets an entry as it's built. Expected entries:
-- `POST /api/auth/google` (replaces OTP — see USER_API_CHANGES.md)
+- `POST /api/auth/google` ✓ (see below)
 - `GET /api/user/username/suggestions`
 - `PATCH /api/user/username`
 - `GET /api/user/wallet`
 - `GET /api/user/wallet/transactions`
 - ... etc per TASKS.md Phase 3
+
+---
+
+## [POST /api/auth/google]
+
+**SIGNATURE**
+```ts
+POST /api/auth/google
+Body: { idToken: string; deviceType?: 'android' | 'ios' | 'unknown' }
+```
+
+**INPUT**
+- `idToken` — Google ID token from the native Google Sign-In SDK. String, required.
+- `deviceType` — optional; one of `'android' | 'ios' | 'unknown'`. Stored on User doc for returning users; ignored if not one of the valid values.
+
+**OUTPUT**
+```ts
+{
+  message: string;
+  token: string;           // JWT Bearer token (role: 'user', TTL: USER_TOKEN_TTL = '7d')
+  userId: string;
+  userName: string;        // user.username
+  isNewUser: boolean;      // true on first login — app shows username onboarding
+  usernameLocked: boolean; // false until user confirms via PATCH /api/user/username
+  wallet: {
+    balance: string;       // formatted display string e.g. "₹10.00"
+    instantBonus: string;  // formatted display string
+    lockedBonus: string;   // formatted display string
+    currency: 'INR' | 'USD';
+  };
+}
+```
+HTTP 201 on new user created, HTTP 200 on returning user.
+
+**ERRORS THROWN**
+- `AuthError` (`MISSING_ID_TOKEN`) → 400 — `idToken` absent or not a string.
+- `AuthError` (`INVALID_GOOGLE_TOKEN`) → 401 — Firebase token invalid/expired, or `FIREBASE_PROJECT_ID` / `FIREBASE_CLIENT_EMAIL` / `FIREBASE_PRIVATE_KEY` env vars missing.
+- `AuthError` (`ACCOUNT_SUSPENDED`) → 403 — `user.status === 'suspended'`.
+
+**SIDE EFFECTS**
+- **First login:** `User.create` + `Wallet.create` (balance = `SIGNUP_BONUS_MINOR`) + `WalletTransaction.create` (type `'bonus'`, remark `'signupBonus'`), all in one Mongo session/transaction.
+- **Returning user:** `user.lastLogin = new Date()`, `user.deviceType` updated if valid value sent, then `user.save()`.
+
+**INVARIANTS**
+- `[INVARIANT]` JWT must be signed with `role: 'user'` explicitly — `IJwtPayload` makes `role` optional, omitting it causes `requireUser` to reject the token with `WRONG_ROLE`.
+- `[INVARIANT]` Google provider ID is stored as `authProviders[].providerId`. `googleUserId` comes from `decodedToken.uid` (Firebase UID). Lookup query: `{ 'authProviders.provider': 'google', 'authProviders.providerId': googleUserId }`.
+- `[INVARIANT]` `'signupBonus'` is not a valid `TransactionType`. Use `type: 'bonus'` with `remark: 'signupBonus'` for the signup bonus transaction.
+- `[INVARIANT]` Wallet creation is guarded: `Wallet.findOne({ userId })` first. If wallet already exists (e.g. re-entrant call), skip creation. This prevents double-granting the signup bonus.
+
+---
+
+## [GET /api/user/username/suggestions]
+
+**SIGNATURE**
+```ts
+GET /api/user/username/suggestions
+Headers: Authorization: Bearer <token>
+```
+
+**INPUT**
+- Bearer token (required). No request body.
+
+**OUTPUT**
+```ts
+{ suggestions: string[] }   // 3 currently-available unique gamer names
+```
+
+**ERRORS THROWN**
+- `AuthError` (any auth code) → 401 — missing/invalid/expired token.
+
+**SIDE EFFECTS**
+- Read-only. Calls `User.exists` up to 60 times to check availability. No writes.
+
+**INVARIANTS**
+- `[INVARIANT]` Returns exactly 3 suggestions (may return fewer only if 60 generation attempts are exhausted — degenerate case, not expected in practice).
+- `[INVARIANT]` Availability check is case-insensitive. A returned suggestion is available at time-of-check; the caller must tolerate a race (another user may claim it between check and PATCH).
+
+---
+
+## [PATCH /api/user/username]
+
+**SIGNATURE**
+```ts
+PATCH /api/user/username
+Headers: Authorization: Bearer <token>
+Body: { username: string }
+```
+
+**INPUT**
+- Bearer token (required).
+- `username` — desired username string, trimmed before use. Must be non-empty.
+
+**OUTPUT**
+```ts
+{ message: 'Username set', userName: string, usernameLocked: true }
+```
+
+**ERRORS THROWN**
+- `AuthError` (any auth code) → 401 — missing/invalid/expired token.
+- `AuthError` (`MISSING_USERNAME`) → 400 — body missing `username` or empty string.
+- `AuthError` (`NOT_FOUND`) → 404 — userId from token no longer exists in DB (shouldn't happen).
+- `AuthError` (`USERNAME_LOCKED`) → 409 — `user.usernameLocked === true`; username is permanent.
+- `AuthError` (`USERNAME_TAKEN`) → 409 — case-insensitive match found on another user.
+
+**SIDE EFFECTS**
+- `user.username = trimmed; user.usernameLocked = true; user.save()` — one write.
+
+**INVARIANTS**
+- `[INVARIANT]` Uniqueness check excludes the current user (`_id: { $ne: user._id }`) so a user may confirm their existing auto-generated name without collision.
+- `[INVARIANT]` Case-insensitive uniqueness is enforced at the API layer via regex. The Mongoose unique index on `username` is case-sensitive by default — the regex check is the real gate. Do not rely on the index alone for this.
+- `[INVARIANT]` Once `usernameLocked === true`, no route may change `username` or unset the lock. The lock is permanent.
+
+---
+
+## [GET /api/user/wallet]
+
+**SIGNATURE**
+```ts
+GET /api/user/wallet
+Headers: Authorization: Bearer <token>
+```
+
+**INPUT**
+- Bearer token (required). No request body.
+
+**OUTPUT**
+```ts
+{
+  wallet: {
+    balance: string;       // formatted display string e.g. "₹10.00"
+    instantBonus: string;  // formatted display string
+    lockedBonus: string;   // formatted display string
+    currency: 'INR' | 'USD';
+  }
+}
+```
+
+**ERRORS THROWN**
+- `AuthError` (any auth code) → 401 — missing/invalid/expired token.
+- `AuthError` (`NOT_FOUND`) → 404 — no wallet document for this userId.
+
+**SIDE EFFECTS**
+- Read-only. One `Wallet.findOne` query, no writes.
+
+**INVARIANTS**
+- `[INVARIANT]` All three balance fields (`balance`, `instantBonus`, `lockedBonus`) are serialized via `serializeMoney` — never returned as raw integers.
+
+---
+
+## [GET /api/user/wallet/transactions]
+
+**SIGNATURE**
+```ts
+GET /api/user/wallet/transactions?page=1&limit=20
+Headers: Authorization: Bearer <token>
+```
+
+**INPUT**
+- Bearer token (required). No request body.
+- `page` — query param, integer ≥ 1, default 1.
+- `limit` — query param, integer 1–50, default 20. Capped at 50.
+
+**OUTPUT**
+```ts
+{
+  transactions: Array<{
+    id: string;
+    type: 'deposit' | 'withdraw' | 'deskIn' | 'deskWithdraw' | 'bonus' | 'pgDeposit';
+    status: 'pending' | 'completed' | 'failed' | 'reversed';
+    amount: {
+      cashAmount: string;      // formatted display string
+      instantBonus: string;
+      lockedBonus: string;
+      gst: string;
+      tds: string;
+      otherDeductions: string;
+      total: string;
+    };
+    currency: 'INR' | 'USD';
+    remark: string | null;
+    deskId: string | null;
+    completedAt: Date | null;
+    createdAt: Date;
+  }>;
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
+```
+Sorted newest-first (`createdAt` descending).
+
+**ERRORS THROWN**
+- `AuthError` (any auth code) → 401 — missing/invalid/expired token.
+- `AuthError` (`NOT_FOUND`) → 404 — no wallet document for this userId.
+
+**SIDE EFFECTS**
+- Read-only. `Wallet.findOne` + `WalletTransaction.find` + `WalletTransaction.countDocuments`. No writes.
+
+**INVARIANTS**
+- `[INVARIANT]` All seven `amount` sub-fields are serialized via `serializeMoney` — never returned as raw integers.
+- `[INVARIANT]` `limit` is hard-capped at 50 server-side regardless of what the client sends.
+- `[INVARIANT]` Transactions are scoped to the wallet matching the authenticated user's `userId` — callers cannot request another user's transactions.
+
+---
+
+## [GET /api/user/banks]
+
+**SIGNATURE**
+```ts
+GET /api/user/banks
+Headers: Authorization: Bearer <token>
+```
+
+**INPUT**
+- Bearer token (required). No request body.
+
+**OUTPUT**
+```ts
+{
+  banks: Array<{
+    id: string;
+    accountNumber: string;
+    bankName: string;
+    ifscCode: string;
+    accountHolderName: string;
+    isDefault: boolean;
+    status: 'active' | 'blocked' | 'inactive';
+    createdAt: Date;
+  }>;
+}
+```
+Sorted newest-first (`createdAt` descending).
+
+**ERRORS THROWN**
+- `AuthError` (any auth code) → 401 — missing/invalid/expired token.
+
+**SIDE EFFECTS**
+- Read-only. One `BankAccount.find` query.
+
+**INVARIANTS**
+- `[INVARIANT]` Results are scoped to the authenticated user's `userId`. `userId` is not included in the response (redundant — it's the caller's own account).
+
+---
+
+## [POST /api/user/banks]
+
+**SIGNATURE**
+```ts
+POST /api/user/banks
+Headers: Authorization: Bearer <token>
+Body: { accountNumber: string; bankName: string; ifscCode: string; accountHolderName: string }
+```
+
+**INPUT**
+- Bearer token (required).
+- `accountNumber` — bank account number string, trimmed. Required.
+- `bankName` — name of the bank, trimmed. Required.
+- `ifscCode` — IFSC code, trimmed, stored uppercase (schema enforces). Required.
+- `accountHolderName` — name on the account, trimmed. Required.
+
+**OUTPUT**
+Same shape as a single bank in the GET response, HTTP 201.
+
+**ERRORS THROWN**
+- `AuthError` (any auth code) → 401 — missing/invalid/expired token.
+- `AuthError` (`MISSING_BANK_FIELD`) → 400 — any required field absent or empty.
+- `AuthError` (`BANK_LIMIT_REACHED`) → 400 — user already has 5 bank accounts.
+
+**SIDE EFFECTS**
+- `BankAccount.create(...)` — one write. If this is the user's first account (`countDocuments === 0`), `isDefault` is set to `true`.
+
+**INVARIANTS**
+- `[INVARIANT]` Maximum 5 bank accounts per user. Enforced both at the route layer (returns 400) and in the model's pre-save hook (backup). The route-level check is the primary gate — the hook error would surface as 500 without it.
+- `[INVARIANT]` The first account added for a user is always set as the default (`isDefault: true`). Subsequent accounts default to `isDefault: false`. There is currently no endpoint to change the default — deferred to a later phase.
+
+---
+
+## [GET /api/user/banks/transactions]
+
+**SIGNATURE**
+```ts
+GET /api/user/banks/transactions?page=1&limit=20
+Headers: Authorization: Bearer <token>
+```
+
+**INPUT**
+- Bearer token (required). No body.
+- `page` — query param, integer ≥ 1, default 1.
+- `limit` — query param, integer 1–50, default 20. Capped server-side at 50.
+
+**OUTPUT**
+```ts
+{
+  transactions: Array<{
+    id: string;
+    bankAccountId: string;
+    type: 'deposit' | 'withdraw';
+    status: 'pending' | 'completed' | 'failed';
+    amount: string;       // formatted display string e.g. "₹500.00"
+    currency: 'INR' | 'USD';
+    imageUrl: string | null;
+    remark: string | null;
+    completedAt: Date | null;
+    createdAt: Date;
+  }>;
+  pagination: { page: number; limit: number; total: number; totalPages: number };
+}
+```
+Sorted newest-first.
+
+**ERRORS THROWN**
+- `AuthError` (any auth code) → 401.
+
+**SIDE EFFECTS**
+- Read-only. `BankTransaction.find` + `BankTransaction.countDocuments`.
+
+**INVARIANTS**
+- `[INVARIANT]` `amount` is serialized via `serializeMoney` — never a raw integer.
+- `[INVARIANT]` Results are scoped to the authenticated user's `userId`.
+
+---
+
+## [POST /api/user/banks/transactions]
+
+**SIGNATURE**
+```ts
+POST /api/user/banks/transactions
+Headers: Authorization: Bearer <token>
+Content-Type: multipart/form-data
+Body fields:
+  type: 'deposit' | 'withdraw'
+  bankAccountId: string
+  amount: string  (integer minor units as a string — parsed via parseAmount)
+  remark?: string
+  image?: File    (required when type === 'deposit')
+```
+
+**INPUT**
+- Bearer token (required).
+- `type` — `'deposit'` or `'withdraw'`. Required.
+- `bankAccountId` — ObjectId string of an active bank account owned by the user. Required.
+- `amount` — minor-unit integer as a form string. Parsed via `parseAmount`. Required.
+- `remark` — optional string, trimmed before save.
+- `image` — File upload, required for deposit. Max size controlled by `MAX_FILE_SIZE` env (default 5 242 880 bytes). Saved to `UPLOAD_DIR` env (default `'uploads'`).
+
+**OUTPUT**
+```ts
+{
+  transaction: {
+    id: string;
+    bankAccountId: string;
+    type: 'deposit' | 'withdraw';
+    status: 'pending';   // always pending on creation
+    amount: string;      // formatted display string
+    currency: 'INR' | 'USD';
+    imageUrl: string | null;
+    remark: string | null;
+    completedAt: null;
+  }
+}
+```
+HTTP 201.
+
+**ERRORS THROWN**
+- `AuthError` (any auth code) → 401.
+- `AuthError` (`MISSING_BANK_FIELD`) → 400 — `type`, `bankAccountId`, or `amount` absent or invalid.
+- `AuthError` (`INVALID_BANK_ACCOUNT`) → 404 — bank account not found, not owned by user, or not `status: 'active'`.
+- `AuthError` (`MISSING_IMAGE`) → 400 — deposit with no image, or image exceeds `MAX_FILE_SIZE`.
+- `AuthError` (`INSUFFICIENT_BALANCE`) → 400 — withdraw amount exceeds wallet balance.
+- `InvalidAmountError` (`INVALID_AMOUNT_*`) → 400 — `amount` is not a valid non-negative integer.
+
+**SIDE EFFECTS**
+- Deposit: saves image file to `UPLOAD_DIR` on disk. Creates `BankTransaction` (status: `'pending'`). No wallet mutation.
+- Withdraw: checks wallet balance. Creates `BankTransaction` (status: `'pending'`). Does NOT deduct from wallet — deduction happens on admin approval (Phase 4).
+
+**INVARIANTS**
+- `[INVARIANT]` Withdrawal does NOT modify the wallet at creation time. Wallet deduction is Phase 4 (admin approval flow).
+- `[INVARIANT]` `bankAccountId` is verified against the authenticated user's `userId` and `status === 'active'` before creating the transaction — prevents cross-user and blocked-account abuse.
+- `[INVARIANT]` `amount` passes through `parseAmount` — raw form strings are never trusted as integers directly.
+- `[INVARIANT]` Upload directory is created with `mkdir({ recursive: true })` before every write — the route is safe on first use even if the directory doesn't exist.
+
+---
+
+## [POST /api/payments/razorpay/order]
+
+**SIGNATURE**
+```ts
+POST /api/payments/razorpay/order
+Headers: Authorization: Bearer <token>
+Body: { amount: number }   // integer minor units
+```
+
+**INPUT**
+- Bearer token (required).
+- `amount` — payment amount in minor units (paise). Integer ≥ 1. Validated via `parseAmount`.
+
+**OUTPUT**
+```ts
+{
+  orderId: string;    // Razorpay order ID (e.g. "order_xyz...")
+  amount: number;     // raw minor-unit integer — passed directly to Razorpay checkout SDK
+  currency: 'INR' | 'USD';
+  keyId: string;      // RAZORPAY_KEY_ID — used to initialise the frontend SDK
+}
+```
+HTTP 201. **Note:** `amount` is a raw integer here, not a formatted display string. The frontend passes it directly to the Razorpay checkout SDK, which requires the minor-unit integer.
+
+**ERRORS THROWN**
+- `AuthError` (any auth code) → 401 — missing/invalid/expired token.
+- `InvalidAmountError` (`INVALID_AMOUNT_*`) → 400 — amount missing, not a number, non-integer, negative, or out of range.
+- `ServiceError` (`RAZORPAY_NOT_CONFIGURED`) → 500 — `RAZORPAY_KEY_ID` or `RAZORPAY_KEY_SECRET` env vars missing.
+
+**SIDE EFFECTS**
+- Calls `razorpay.orders.create` (external HTTP call to Razorpay).
+- `GatewayTransaction.create({ ..., status: 'created', gatewayOrderId: order.id })` — one DB write.
+
+**INVARIANTS**
+- `[INVARIANT]` The Razorpay instance is module-level (created once at import time). Env var presence is validated inside the handler before use.
+- `[INVARIANT]` `GatewayTransaction` is created AFTER the Razorpay order succeeds. If Razorpay fails, no DB record is written.
+- `[INVARIANT]` `receipt` field sent to Razorpay is `${userId}-${Date.now()}` — max 38 chars, within Razorpay's 40-char limit.
+- `[INVARIANT]` `amount` in the response is a raw integer (exception to the formatted-string convention). This is required by the Razorpay frontend SDK. Do not change to `serializeMoney`.
+
+---
+
+## [POST /api/payments/razorpay/verify]
+
+**SIGNATURE**
+```ts
+POST /api/payments/razorpay/verify
+Headers: Authorization: Bearer <token>
+Body: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }
+```
+
+**INPUT**
+- Bearer token (required).
+- `razorpay_order_id` — Razorpay order ID from the checkout response. Required.
+- `razorpay_payment_id` — Razorpay payment ID from the checkout response. Required.
+- `razorpay_signature` — HMAC-SHA256 signature from the checkout response. Required.
+
+**OUTPUT**
+```ts
+{ message: 'Payment verified', credited: string }
+// credited = serializeMoney(cashAmount, currency) — formatted display string
+```
+
+**ERRORS THROWN**
+- `AuthError` (any auth code) → 401 — missing/invalid/expired token.
+- `AuthError` (`MISSING_BANK_FIELD`) → 400 — any of the three Razorpay fields absent or not a string.
+- `AuthError` (`INVALID_PAYMENT_SIGNATURE`) → 400 — HMAC-SHA256 verification failed.
+- `AuthError` (`NOT_FOUND`) → 404 — no `GatewayTransaction` with `gatewayOrderId === razorpay_order_id`.
+- `AuthError` (`FORBIDDEN`) → 403 — `GatewayTransaction.userId` does not match the authenticated user.
+- `AuthError` (`PAYMENT_ALREADY_PROCESSED`) → 400 — `GatewayTransaction.status !== 'created'` (duplicate callback).
+
+**SIDE EFFECTS**
+All three writes are in one Mongo session/transaction — atomic:
+1. `Wallet.findOneAndUpdate({ userId }, { $inc: { balance: cashAmount } })` — credits spendable balance.
+2. `WalletTransaction.create([{ type: 'deposit', status: 'completed', amount: { cashAmount, gst: gstAmount, total: grossAmount } }])`.
+3. `GatewayTransaction.findByIdAndUpdate(gtx._id, { status: 'completed', gatewayPaymentId, gatewaySignature })`.
+
+**INVARIANTS**
+- `[INVARIANT]` HMAC verification runs BEFORE any DB read — forged requests are rejected without touching the database.
+- `[INVARIANT]` Never double-credit: the route rejects if `gtx.status !== 'created'`. The status is updated to `'completed'` inside the transaction, making re-entrant calls safe.
+- `[INVARIANT]` GST split and bonus amounts are read from `AppConfig.findOne({})` at request time. Fallbacks: `gstMultiplier = 1.28`, `depositBonusRate = 1.0`. If no AppConfig document exists the route works correctly with these defaults.
+- `[INVARIANT]` `cashAmount = Math.round(gross / gstMultiplier)`, `gstAmount = gross - cashAmount`, `bonusAmount = Math.round(gstAmount * depositBonusRate)`. Both `wallet.balance` (cashAmount) and `wallet.instantBonus` (bonusAmount) are incremented in the same transaction.
+
+---
+
+## [AppConfig model]
+
+**SHAPE**
+```ts
+interface IAppConfig {
+  gstMultiplier: number;    // default 1.28 — gross / gstMultiplier = cash credited
+  depositBonusRate: number; // default 1.0  — fraction of gstAmount credited as instantBonus (0–1)
+}
+```
+
+**USAGE**
+Singleton — at most one document in the collection. Read with `AppConfig.findOne({})`. Updated by admin via `findOneAndUpdate({}, {...}, { upsert: true })` (Phase 4 task 4.15).
+
+**VALIDATORS**
+- `gstMultiplier` must be `>= 1` (pre-save hook).
+- `depositBonusRate` must be `>= 0` and `<= 1` (pre-save hook).
+
+**CALLERS**
+- `POST /api/payments/razorpay/verify` — reads at verify time to compute GST split and bonus.
+- `POST /api/admin/config` (Phase 4) — writes the document.
+
+**INVARIANTS**
+- `[INVARIANT]` Both `gstMultiplier` and `depositBonusRate` have defaults baked into every caller (`?? 1.28` / `?? 1.0`) — the route is safe if no config document has been created yet.
+- `[INVARIANT]` This is a singleton. Never create a second document. Admin update uses `upsert: true` on `findOneAndUpdate({}, ...)`.
+- `[INVARIANT]` Updating `gstMultiplier` changes the cash/bonus split for ALL future deposits — existing `GatewayTransaction` records are not retroactively affected.
+
+---
+
+## [GET /api/lobby/games]
+
+**SIGNATURE**
+```ts
+GET /api/lobby/games
+Headers: Authorization: Bearer <token>
+```
+
+**INPUT**
+- Bearer token (required). No query params or body.
+
+**OUTPUT**
+```ts
+{
+  games: Array<{
+    pokerGameId: string;
+    gameType: 'Texas Hold\'em' | 'Omaha';
+    description: string | null;
+    modes: Array<{
+      modeId: string;
+      modeType: string;           // PokerMode.mode field
+      stake: string;              // formatted display string (SB amount)
+      bigBlind: string;           // formatted display string = stake * 2
+      minBuyIn: string;           // formatted display string
+      maxBuyIn: string;           // formatted display string
+      currency: 'INR' | 'USD';
+      desks: Array<{
+        deskId: string;
+        tableName: string;
+        playerCount: number;      // desk.seats.length — live count
+        maxPlayers: number;       // desk.maxPlayerCount
+        gameStatus: string;       // desk.currentGameStatus
+        totalPot: string;         // formatted display string; "₹0.00" when no active game
+      }>;
+    }>;
+  }>;
+}
+```
+
+**ERRORS THROWN**
+- `AuthError` (any auth code) → 401.
+
+**SIDE EFFECTS**
+- Read-only. Three sequential `find` queries: `Poker`, `PokerMode`, `PokerDesk`.
+
+**INVARIANTS**
+- `[INVARIANT]` Only `status: 'active'` documents are returned at all three levels — closed desks, disabled modes, and inactive game types are excluded.
+- `[INVARIANT]` `bigBlind` is always computed as `mode.stake * 2` — it is never a separate stored field. Do not add a `bigBlind` field to any model.
+- `[INVARIANT]` `totalPot` uses `desk.currentGame?.totalBet ?? 0` — zero when no game is in progress.
+- `[INVARIANT]` All three queries use `.lean()` — no Mongoose document overhead in this read-heavy endpoint.
+- `[INVARIANT]` All IDs in the response are `.toString()` strings, not ObjectId objects.
+
+---
+
+## [GET /api/lobby/desks/best]
+
+**SIGNATURE**
+```ts
+GET /api/lobby/desks/best?modeId=<ObjectId>
+Headers: Authorization: Bearer <token>
+```
+
+**INPUT**
+- Bearer token (required).
+- `modeId` — query param, ObjectId string of an active `PokerMode`. Required; 400 if absent.
+
+**OUTPUT**
+```ts
+// When a desk with open seats exists:
+{
+  desk: {
+    deskId: string;
+    tableName: string;
+    playerCount: number;        // desk.seats.length — live count
+    maxPlayers: number;         // desk.maxPlayerCount
+    availableSeats: number;     // maxPlayers - playerCount
+    gameStatus: string;         // desk.currentGameStatus
+    stake: string;              // formatted display string (sourced from PokerMode)
+    bigBlind: string;           // formatted display string = stake * 2
+    minBuyIn: string;           // formatted display string (sourced from PokerMode)
+    maxBuyIn: string;           // formatted display string (sourced from PokerMode)
+    currency: 'INR' | 'USD';    // sourced from PokerMode
+    mode: string;               // PokerMode.mode value
+  }
+}
+
+// When no desk has open seats:
+{ desk: null }
+```
+HTTP 200 in both cases. `{ desk: null }` is a valid, expected response — not 404.
+
+**ERRORS THROWN**
+- `AuthError` (any auth code) → 401.
+- `AuthError` (`MISSING_BANK_FIELD`) → 400 — `modeId` query param absent.
+- `AuthError` (`NOT_FOUND`) → 404 — `modeId` not a valid ObjectId, mode not found, or `mode.status !== 'active'`.
+
+**SIDE EFFECTS**
+- Read-only. `PokerMode.findById` + `PokerDesk.find` with `$expr/$size`.
+
+**INVARIANTS**
+- `[INVARIANT]` `{ desk: null }` (HTTP 200) is the correct response when no seat-available desk exists — do not change to 404.
+- `[INVARIANT]` Desk selection uses MongoDB `$expr: { $lt: [{ $size: '$seats' }, '$maxPlayerCount'] }` to compare array length against a stored field. Do not attempt this comparison in application code after loading all desks.
+- `[INVARIANT]` `stake`, `minBuyIn`, `maxBuyIn`, and `mode` in the response are sourced from the loaded `PokerMode` document — these fields do not exist on `IPokerDesk`. The mode is loaded in step 4 for this exact purpose.
+- `[INVARIANT]` Sort is `{ seats: -1 }` to prefer fuller (warmer) tables. Combined with the `$expr` filter this returns at most one document via `.limit(1)`.
+
+---
+
+## [GET /api/user/games/history]
+
+**SIGNATURE**
+```ts
+GET /api/user/games/history?page=1&limit=20
+Headers: Authorization: Bearer <token>
+```
+
+**INPUT**
+- Bearer token (required). No body.
+- `page` — query param, integer ≥ 1, default 1.
+- `limit` — query param, integer 1–50, default 20. Capped at 50 server-side.
+
+**OUTPUT**
+```ts
+{
+  games: Array<{
+    archiveId: string;
+    gameType: string;
+    completedAt: Date;
+    totalPot: string;           // formatted display string
+    myResult: {
+      startingStack: string;    // formatted display string
+      endingStack: string;      // formatted display string
+      totalBet: string;         // formatted display string
+      isWinner: boolean;
+    };
+    players: Array<{ username: string; isWinner: boolean }>;
+    pots: Array<{
+      potNumber: number;
+      totalAmount: string;      // formatted display string
+      winners: Array<{
+        username: string;
+        amount: string;         // formatted display string
+        handDescription: string | null;
+      }>;
+    }>;
+  }>;
+  pagination: { page: number; limit: number; total: number; totalPages: number };
+}
+```
+Sorted newest-first by `completedAt`.
+
+**ERRORS THROWN**
+- `AuthError` (any auth code) → 401.
+
+**SIDE EFFECTS**
+- Read-only. Uses index `{ 'players.userId': 1, completedAt: -1 }`.
+
+**INVARIANTS**
+- `[INVARIANT]` All money fields (`totalPot`, `startingStack`, `endingStack`, `totalBet`, `totalAmount`, `amount`) are serialized via `serializeMoney` — never raw integers.
+- `[INVARIANT]` `completedAt` is a schema field on `IPokerGameArchive` (not a `timestamps` field) — it's always present and does not require lean type augmentation.
+- `[INVARIANT]` If `archive.players.find(p => p.userId.toString() === userId)` returns undefined (data integrity issue), the archive is silently skipped rather than throwing. The query filter `{ 'players.userId': userId }` makes this theoretically impossible but the guard prevents a runtime crash.
 
 # PHASE 4 — Admin API (STATUS: DRAFT — not built yet)
 

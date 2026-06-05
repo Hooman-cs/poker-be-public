@@ -21,6 +21,146 @@ it was built that way, LOGS.md is.
 
 ---
 
+## 2026-06-05 — EVENT — LOGS.md ownership transferred to Claude Desktop
+
+Previously Claude Code maintained LOGS.md. Transferred to Claude Desktop because most entries capture design decisions made in the conversation layer, not implementation discoveries. Claude Code still surfaces discoveries via HANDOFF.md open questions; Claude Desktop writes the LOGS.md entry after verifying. Claude Code no longer writes to LOGS.md.
+
+[INVARIANT] Claude Code reads LOGS.md but does not edit it. Claude Desktop is the sole author.
+
+---
+
+## 2026-06-05 — LESSON — `.lean<T>()` required for Mongoose `timestamps: true` fields in TypeScript
+
+When querying a model that uses `timestamps: true`, Mongoose adds `createdAt` and `updatedAt` at runtime but these fields are absent from the declared TypeScript interface. Accessing them on a regular query result produces a TS error. Fix: use `.lean<ModelInterface & { _id: Types.ObjectId; createdAt: Date; updatedAt: Date }>()` to get a plain object with the correct type. Found in Phase 3.4 (`walletTransaction` query).
+
+[INVARIANT] Any route querying a `timestamps: true` model and accessing `createdAt`/`updatedAt` must use `.lean<T>()` with an augmented type. Never cast to `any` as a workaround.
+
+---
+
+## 2026-06-05 — DECISION — Switched token verification from google-auth-library to Firebase Admin SDK
+
+Frontend uses Firebase for Google Sign-In and sends Firebase ID tokens (`user.getIdToken()`). These are issued by `securetoken.google.com/{project}` and cannot be verified by `google-auth-library`'s `OAuth2Client` which expects tokens from `accounts.google.com`. Switched `googleVerify.ts` to `firebase-admin` `auth().verifyIdToken()`. The `uid` field from the decoded Firebase token is stored as `authProviders.providerId` — this is Firebase's own UID for the user, not the Google OAuth `sub` claim. Since no users exist in production yet, no migration needed.
+
+[INVARIANT] `authProviders.providerId` for Google-authenticated users stores the Firebase UID (`decoded.uid`), not the Google OAuth `sub` claim. These are different values. Do not mix them.
+
+[INVARIANT] The frontend must send `await user.getIdToken()` as the `idToken` field — not `user.uid`, `user.refreshToken`, or any other Firebase property. Firebase ID tokens are JWTs beginning with `eyJ`; anything else will fail decoding before verification.
+
+---
+
+## 2026-06-05 — BUG — POST /api/auth/google allows 'inactive' users to log in
+
+Phase 3.13 verification found that the auth route only checks `status === 'suspended'` and rejects with 403. The LOGS.md invariant (2026-06-05) states both `'inactive'` and `'suspended'` must be rejected. The Phase 3.1 HANDOFF raised this as an open question; the answer was given in conversation but never applied to the code. Fixed in 3.13-patch: condition changed to `status !== 'active'`.
+
+[INVARIANT] Only `status === 'active'` users receive a JWT. Any other status (`'inactive'`, `'suspended'`) is rejected with 403. The check must be `status !== 'active'`, not `status === 'suspended'`.
+
+---
+
+## 2026-06-05 — TASK 3.13 — Contract verification pass — PASS (1 bug found, fixed)
+
+Read all 14 user-facing route files against USER_API_CHANGES.md. All routes clean except one bug (inactive login, see above). No OTP routes anywhere under src/app/api/. The Razorpay order `amount` raw integer is a documented exception per CONTRACTS.md invariant.
+
+---
+
+## 2026-06-05 — TASK 3.11 — GET /api/user/games/history — PASS
+
+Built `src/app/api/lobby/desks/best/route.ts`. Validates `modeId` with `isValid()` before `findById` (prevents CastError 500). Uses `$expr: { $lt: [{ $size: '$seats' }, '$maxPlayerCount'] }` to find desks with open seats. Sorted `{ seats: -1 }` (fullest non-full desk first). Returns `{ desk: null }` with HTTP 200 when no desk available — valid state, not an error. Money fields from the PokerMode document (not the desk), as PokerDesk's denormalized stake fields could theoretically diverge.
+
+---
+
+## 2026-06-05 — TASK 3.9 — GET /api/lobby/games — PASS
+
+Built `src/app/api/lobby/games/route.ts`. Three sequential `.lean()` queries (Poker → PokerMode → PokerDesk) filtered to `status: 'active'` at each level. Results assembled via Maps keyed by `_id.toString()` for O(1) lookup during nesting. All money fields serialized; `bigBlind` computed as `stake × 2` inline. No phantom fields — all response fields verified against model interfaces.
+
+---
+
+## 2026-06-05 — TASK 3.8b — AppConfig model + verify route instantBonus — PASS
+
+Created `src/models/appConfig.ts` as a singleton document. Fields: `gstMultiplier` (default 1.28, min 1) and `depositBonusRate` (default 1.0, range 0–1). Updated Razorpay verify route: loads config with hardcoded fallbacks so the route functions without a config document. Wallet `$inc` now increments both `balance` (creditAmount) and `instantBonus` (bonusAmount = gstAmount × depositBonusRate) in the same Mongo transaction. WalletTransaction amount sub-document updated to include the bonus. CONTRACTS.md stale invariants corrected.
+
+---
+
+## 2026-06-05 — TASK 3.8 patch — HMAC timingSafeEqual — PASS
+
+Replaced `===` string comparison with `crypto.timingSafeEqual` in the Razorpay verify route. Note: a malformed signature with wrong byte length causes timingSafeEqual to throw TypeError (caught as 500 rather than 400) — acceptable since real Razorpay never sends that.
+
+---
+
+## 2026-06-05 — TASK 3.8 — POST /api/payments/razorpay/verify — PASS
+
+Built `src/app/api/payments/razorpay/verify/route.ts`. HMAC-SHA256 verification runs before any DB read. GST split uses `GST_MULTIPLIER` from `constants.ts` (1.28 — 28% on base, correct Indian online gaming rate; task spec of 18% was wrong). All three writes (wallet `$inc`, `WalletTransaction.create`, `GatewayTransaction` status update) execute in one Mongo session. Double-credit guard rejects if `status !== 'created'`. New error codes: `INVALID_PAYMENT_SIGNATURE` (400), `PAYMENT_ALREADY_PROCESSED` (400), `FORBIDDEN` (403). `instantBonus` credit intentionally deferred to 3.8b (AppConfig).
+
+[INVARIANT] GST_MULTIPLIER = 1.28 is the correct rate for Indian online gaming (28% on base value). The task spec of 18% was incorrect. Always use the constant from `constants.ts`, never hardcode a rate.
+
+---
+
+## 2026-06-05 — TASK 3.7 — POST /api/payments/razorpay/order — PASS
+
+Built `src/app/api/payments/razorpay/order/route.ts`. Creates a Razorpay order via the SDK then records a `GatewayTransaction` with `status: 'created'` and the returned `gatewayOrderId`. Module-level Razorpay instance (initialized once). Response returns `{ orderId, amount, currency, keyId }` where `amount` is a raw minor-unit integer — deliberate exception to the outbound-formatted-string convention because the Razorpay checkout SDK is a machine consumer that requires an integer.
+
+[INVARIANT] Razorpay order response `amount` is a raw integer (paise), NOT a formatted string. This is the only endpoint permitted to return a raw money integer outbound. All other money fields remain formatted strings.
+
+---
+
+## 2026-06-05 — TASK 3.6 — GET + POST /api/user/banks/transactions — PASS
+
+Built `src/app/api/user/banks/transactions/route.ts`. GET returns paginated bank transactions (newest-first, limit capped at 50) with `amount` serialized. POST accepts multipart formData for both deposit and withdraw types. Deposit validates image presence, checks file size against `MAX_FILE_SIZE`, creates the `UPLOAD_DIR` directory if absent, and saves the file with a timestamp-prefixed filename. Withdraw checks that wallet balance covers the requested amount but does NOT deduct — the transaction is created as `status: 'pending'` for admin approval in Phase 4. `bankAccountId` ownership and active status verified before creating either type. New error codes: `INVALID_BANK_ACCOUNT` (404), `MISSING_IMAGE` (400), `INSUFFICIENT_BALANCE` (400).
+
+---
+
+## 2026-06-05 — TASK 3.5 — GET + POST /api/user/banks — PASS
+
+Built `src/app/api/user/banks/route.ts`. GET returns all bank accounts for the user sorted newest-first. POST validates required fields, checks the 5-account limit at the route level (giving a clean `BANK_LIMIT_REACHED` 400), sets `isDefault: true` for the first account, then delegates to `BankAccount.create`. The model's pre-save hook also enforces the limit but surfaces as an untyped 500 without the route-level check — both layers retained deliberately. New error codes: `BANK_LIMIT_REACHED` (400), `MISSING_BANK_FIELD` (400).
+
+---
+
+## 2026-06-05 — TASK 3.4 — GET /api/user/wallet/transactions — PASS
+
+Built `src/app/api/user/wallet/transactions/route.ts`. Paginated (page/limit, limit capped at 50), sorted newest-first. All seven amount sub-fields serialized: `cashAmount`, `instantBonus`, `lockedBonus`, `gst`, `tds`, `otherDeductions`, `total`. TypeScript issue: `createdAt` from `timestamps: true` is absent from the declared interface — resolved with `.lean<ITransaction & { _id: Types.ObjectId; createdAt: Date }>()`. This pattern is now the standard for any route accessing timestamp fields.
+
+---
+
+## 2026-06-05 — TASK 3.3 — GET /api/user/wallet — PASS
+
+Built `src/app/api/user/wallet/route.ts`. Returns all three balance fields serialized via `serializeMoney`. Field names confirmed against schema: `balance`, `instantBonus`, `lockedBonus`, `currency` — all present, all schema-defaulted to 0. No fallback values needed. Clean first pass.
+
+---
+
+## 2026-06-05 — TASK 3.2 — GET /api/user/username/suggestions + PATCH /api/user/username — PASS
+
+Built two routes in `src/app/api/user/username/`. GET loops `generateGamerName()` with case-insensitive `User.exists` checks, collecting at least 3 available suggestions (max 60 attempts). PATCH validates, checks `usernameLocked` (409), does case-insensitive uniqueness check excluding the current user, saves with `usernameLocked: true`. User input in PATCH is regex-escaped before the MongoDB query — `generateGamerName` output does not need escaping (always alphanumeric). New error codes: `USERNAME_LOCKED` (409), `USERNAME_TAKEN` (409), `MISSING_USERNAME` (400).
+
+---
+
+## 2026-06-05 — EVENT — Phase 3.1 schema discoveries: three field/type corrections
+
+Three assumptions in the task instructions turned out to be wrong when Claude Code read the actual schemas:
+
+1. **`authProviders.providerId` not `providerUserId`.** The User model stores the Google user ID as `providerId`. Any future auth routes must use this field name.
+2. **WalletTransaction type `'bonus'` not `'signupBonus'`.** The `TransactionType` enum has no `'signupBonus'` value. Valid types are `'deposit' | 'withdraw' | 'deskIn' | 'deskWithdraw' | 'bonus' | 'pgDeposit'`. Signup bonus is recorded as `type: 'bonus', remark: 'signupBonus'`.
+3. **`'inactive'` also rejected at login.** `UserStatus` is `'active' | 'inactive' | 'suspended'`. Only `'active'` users receive a JWT — `'inactive'` and `'suspended'` both return 403. This is consistent with `requireAdmin` which also rejects any non-`'active'` status.
+
+[INVARIANT] `authProviders.providerId` is the correct field name for the Google user ID on the User model. Do not use `providerUserId`.
+
+[INVARIANT] Signup bonus wallet transaction: `{ type: 'bonus', remark: 'signupBonus' }`. There is no `'signupBonus'` enum value.
+
+[INVARIANT] Only `status === 'active'` users receive a JWT at login. `'inactive'` and `'suspended'` are both rejected with 403.
+
+---
+
+## 2026-06-04 — EVENT — Level 2 unlock: turn-pointer clockwise fix + Option A chip-handling decision
+
+**Level 2 unlock — `gameService.ts`, `userLeavesSeat` only.**
+
+**Bug fixed:** when the leaving player was `currentTurnPlayer`, the code advanced the turn with `game.players.find(p => p.status === 'active')`. This searches by array-insertion order, not seat order, so the next actor depends on who joined first — not who sits next clockwise. Fixed by sorting `desk.seats` by `seatNumber`, finding the leaver's index, then scanning forward (wrapping around) for the first seat whose player has `status === 'active'`.
+
+**Option A confirmed (committed bets stay in pot):** `refundAmount = seat.balanceAtTable` is the uncommitted stack only — chips the player has at the table but NOT yet committed to the current betting round. Committed bets live in `game.rounds[].actions` and stay in the pot regardless of whether the player leaves mid-hand. This is the explicit design choice; do not change `refundAmount` to include committed bets.
+
+[INVARIANT] Turn advancement in `userLeavesSeat` walks `desk.seats` sorted by `seatNumber` clockwise from the leaver's position. Never use array-find-first as a substitute for clockwise walk.
+
+[INVARIANT] Committed bets stay in pot on mid-hand leave; only `seat.balanceAtTable` (uncommitted stack) is refunded. This is intentional — the pot belongs to the remaining active players.
+
+---
+
 ## 2026-06-01 — DECISION — Desk lifecycle: cold → warm → closed state machine
 
 Implemented a three-state lifecycle for poker desks:

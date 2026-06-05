@@ -458,6 +458,9 @@ export async function userLeavesSeat(
     if (seatIndex === -1) throw new NotSeatedError();
 
     const seat = desk.seats[seatIndex];
+    // Option A (explicit design): seat.balanceAtTable is the uncommitted stack.
+    // Committed bets live in game.rounds[].actions and stay in the pot —
+    // they belong to the remaining active players regardless of who left.
     const refundAmount = seat.balanceAtTable;
 
     // Mode/currency live on the desk doc itself (denormalized from PokerMode).
@@ -477,13 +480,32 @@ export async function userLeavesSeat(
         player.status = 'folded';
 
         // If the leaver was about to act, advance to the next active player
-        // so the hand doesn't stall on a folded turn pointer.
+        // clockwise by seatNumber so the hand doesn't stall on a folded turn pointer.
         if (
           game.currentTurnPlayer &&
           game.currentTurnPlayer.equals(userObjectId)
         ) {
-          const nextActive = game.players.find((p) => p.status === 'active');
-          game.currentTurnPlayer = nextActive ? nextActive.userId : null;
+          // Sort seats by seatNumber for a true clockwise walk (desk.seats is
+          // arrival-ordered, not seat-number-ordered).
+          const sortedSeats = [...(desk.seats as unknown as ISeat[])].sort(
+            (a, b) => a.seatNumber - b.seatNumber
+          );
+          const leaverSeatIdx = sortedSeats.findIndex((s) =>
+            s.userId.equals(userObjectId)
+          );
+          let nextTurnUserId: Types.ObjectId | null = null;
+          for (let i = 1; i < sortedSeats.length; i++) {
+            const candidate =
+              sortedSeats[(leaverSeatIdx + i) % sortedSeats.length];
+            const candidatePlayer = game.players.find((p) =>
+              p.userId.equals(candidate.userId)
+            );
+            if (candidatePlayer && candidatePlayer.status === 'active') {
+              nextTurnUserId = candidatePlayer.userId;
+              break;
+            }
+          }
+          game.currentTurnPlayer = nextTurnUserId;
         }
 
         // If only one active/all-in player remains, the hand resolves to them.

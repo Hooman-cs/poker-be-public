@@ -100,6 +100,20 @@ for additive changes; do log signature changes.
 |---|---|
 | `src/lib/auth/requireUser.ts` | Bearer-token guard. Six failure codes. Strict on `role === 'user'`. |
 | `src/lib/auth/requireAdmin.ts` | Cookie guard + DB status check. Six failure codes. Async (DB lookup for revocation). |
+| `src/lib/auth/googleVerify.ts` | Firebase Admin SDK token verifier. Uses `admin.auth().verifyIdToken()`. Returns Firebase UID as `googleUserId`. Env vars: FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY. |
+| `src/app/api/auth/google/route.ts` | Google auth route. Upserts user + wallet; issues JWT. Schema: `authProviders.providerId`. Signup bonus type is `'bonus'` with `remark: 'signupBonus'`. |
+| `src/app/api/user/username/route.ts` | PATCH — set username once. Regex-escapes input before MongoDB query. Rejects if `usernameLocked`. |
+| `src/app/api/user/username/suggestions/route.ts` | GET — returns 3 available unique name suggestions. Max 60 generation attempts. |
+| `src/app/api/user/wallet/route.ts` | GET — returns serialized wallet balances. Fields: balance, instantBonus, lockedBonus, currency. |
+| `src/app/api/user/wallet/transactions/route.ts` | GET — paginated wallet transaction history. `.lean<LeanTx[]>()` pattern for timestamp fields. |
+| `src/app/api/user/banks/route.ts` | GET + POST — list / add bank accounts. Route-level BANK_LIMIT_REACHED check (clean 400) in addition to model pre-save hook. |
+| `src/app/api/user/banks/transactions/route.ts` | GET + POST — bank transaction history / create. Multipart formData. Deposit saves image to UPLOAD_DIR. Withdraw checks balance (no deduction). |
+| `src/app/api/payments/razorpay/order/route.ts` | POST — creates Razorpay order + GatewayTransaction. Response amount is raw integer (SDK exception to outbound-string convention). |
+| `src/app/api/payments/razorpay/verify/route.ts` | POST — HMAC-SHA256 verify (timingSafeEqual), GST split, atomic wallet credit + WalletTransaction + GatewayTransaction update in one Mongo session. |
+| `src/models/appConfig.ts` | Singleton config model. Fields: gstMultiplier (default 1.28), depositBonusRate (default 1.0, range 0–1). Pre-save validators on both fields. |
+| `src/app/api/lobby/games/route.ts` | GET — nested games/modes/desks. Three .lean() queries with Map assembly. bigBlind = stake × 2. |
+| `src/app/api/lobby/desks/best/route.ts` | GET — matchmaking by modeId. $expr/$size open-seat filter. Fullest-first sort. Returns desk:null on no match. |
+| `src/app/api/user/games/history/route.ts` | GET — paginated PokerGameArchive history. completedAt is a schema field (not timestamps). Defensive skip on missing player entry. |
 | `src/lib/api/money.ts` | API edge: `serializeMoney`, `serializeMoneyFields` (outbound → formatted string), `parseAmount` (inbound → strict integer minor units). |
 | `src/lib/api/errors.ts` | Single source of truth for error→HTTP-status mapping. `AuthError`, `successResponse`, `errorResponse`. |
 | `src/types/pokerModelTypes.ts` | Shared transport/DTO types derived from frozen-core models. Class A types live here. |

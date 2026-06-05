@@ -97,13 +97,25 @@ Per `FROZEN_CORE_EDITS.md`. After this phase is green and reviewed, these files 
 
 This is a design conversation, not files. Produces a short design doc we build against.
 
-- [ ] 2.1  Folder/route structure decided (our way) — API tree, components tree, pages tree
-- [ ] 2.2  Naming conventions locked (files, types, routes)
-- [ ] 2.3  User API integration plan — map each PDF endpoint → route file; confirm shapes
-- [ ] 2.4  Practice/bot subsystem design — how bots produce actions, difficulty levels, ephemeral state
-- [ ] 2.5  Live gameplay/socket design — events, turn loop, 60s timer, 3-skip disconnect, auto-start
-- [ ] 2.6  Admin panel scope & screens confirmed
-- [ ] 2.7  Edge-case catalog (timer-vs-action race, disconnect handling, all-in/side-pots, etc.)
+- [x] 2.1  Folder/route structure decided — full API tree in ARCHITECTURE.md (user + admin routes);
+           components tree and pages tree captured in Phase 6 task list
+- [x] 2.2  Naming conventions locked — camelCase ts, PascalCase tsx, route.ts, @/ imports, no barrels;
+           all documented in ARCHITECTURE.md Conventions section
+- [x] 2.3  User API integration plan — each PDF endpoint mapped to route file in Phase 3 task
+           descriptions (3.1–3.12) with exact paths and shapes confirmed
+- [x] 2.4  Practice/bot subsystem design — same handlePlayerAction path; pluggable BotStrategy
+           interface; 3 difficulty levels (easy/medium/hard); synthetic ObjectId identity, no DB;
+           ephemeral Map<deskId, BotSeat[]> in server process. Documented in ARCHITECTURE.md.
+- [x] 2.5  Live gameplay/socket design — namespace:verb events; full state broadcast; 60s
+           server-side timer; 3-skip auto-leave; server-driven auto-start (3s delay).
+           DeskRuntimeState shape defined. Documented in ARCHITECTURE.md.
+- [x] 2.6  Admin panel scope & screens confirmed — 13 screens mapped to Phase 6 tasks;
+           GameHistory + BankTransactionsHistory embedded in user detail (not standalone);
+           sidebar drill-down nav (poker → modes → desks). Documented in ARCHITECTURE.md.
+- [x] 2.7  Edge-case catalog — 8 cases documented in ARCHITECTURE.md: timer/action race,
+           disconnect handling, all-in run-out after leave, auto-start timer race,
+           needsShowdown from leave, all-in on blind, double-join on reconnect,
+           leave during auto-start window.
 
 ---
 
@@ -111,25 +123,61 @@ This is a design conversation, not files. Produces a short design doc we build a
 
 Order = dependency order. Each route reviewed before the next.
 
-- [ ] 3.1  `POST /api/auth/google` — **NEW**. Verify Google ID token (google-auth-library), create-or-load
-           user via authProviders, create wallet + signup bonus on first login, issue JWT. Replaces OTP.
-           **IMPORTANT:** the JWT MUST be signed with `role: 'user'` explicitly. `requireUser` (task 1.2)
-           rejects tokens without that role. signToken's payload type makes role optional, so this is
-           easy to forget — pass it deliberately.
-- [ ] 3.2  `GET /api/user/username/suggestions` + `PATCH /api/user/username` — **NEW**. Onboarding username
-           flow: suggest unique names; set a chosen unique name ONCE (rejects if `usernameLocked`); case-insensitive
-           uniqueness check; sets `usernameLocked` on confirm
-- [ ] 3.3  `GET /api/user/wallet` — balances
-- [ ] 3.4  `GET /api/user/wallet/transactions` — paginated history
-- [ ] 3.5  `GET /api/user/banks` + `POST /api/user/banks` — list / add (max 5, default handling)
-- [ ] 3.6  `GET /api/user/banks/transactions` + `POST` — history / create (deposit needs image; withdraw guard)
-- [ ] 3.7  `POST /api/payments/razorpay/order` — create gateway txn + order
-- [ ] 3.8  `POST /api/payments/razorpay/verify` — HMAC verify, GST split, credit wallet
-- [ ] 3.9  `GET /api/lobby/games` — games + modes + live stats (no phantom fields; bigBlind=2×stake)
-- [ ] 3.10 `GET /api/lobby/desks/best` — matchmaking
-- [ ] 3.11 `GET /api/user/games/history` — **NEW** endpoint (build fresh)
-- [ ] 3.12 Update mobile app `ApiCaller.js`: Google sign-in auth, username onboarding, history endpoint; remove OTP calls
-- [ ] 3.13 Verify every user route response matches the (updated) contract; OTP endpoints fully removed
+- [x] 3.1  `POST /api/auth/google` — DONE. Note: schema field is `authProviders.providerId`
+           (not `providerUserId`). WalletTransaction type is `'bonus'` with `remark: 'signupBonus'`
+           (no `'signupBonus'` enum value exists). `'inactive'` status also rejected (only `'active'`
+           gets a JWT — consistent with requireAdmin).
+- [x] 3.2  `GET /api/user/username/suggestions` + `PATCH /api/user/username` — DONE.
+           Regex-escapes user input before MongoDB case-insensitive query. Max 60 attempts
+           to find 3 available suggestions. New error codes: USERNAME_LOCKED (409),
+           USERNAME_TAKEN (409), MISSING_USERNAME (400).
+- [x] 3.3  `GET /api/user/wallet` — DONE. Field names confirmed: `balance`, `instantBonus`,
+           `lockedBonus`, `currency` — all schema-defaulted to 0, no fallbacks needed.
+- [x] 3.4  `GET /api/user/wallet/transactions` — DONE. Seven amount sub-fields confirmed:
+           cashAmount, instantBonus, lockedBonus, gst, tds, otherDeductions, total.
+           Used `.lean<LeanTx[]>()` for TypeScript access to timestamps fields.
+- [x] 3.5  `GET /api/user/banks` + `POST /api/user/banks` — DONE. Route-level 5-account
+           check added on top of model pre-save hook (hook gives untyped 500; route gives
+           clean BANK_LIMIT_REACHED 400). isDefault auto-set for first account.
+- [x] 3.6  `GET /api/user/banks/transactions` + `POST` — DONE. POST accepts multipart
+           formData for both deposit and withdraw. Deposit saves image to UPLOAD_DIR
+           (mkdir recursive). Withdraw checks wallet balance but does NOT deduct
+           (pending only — admin approves in Phase 4). New error codes:
+           INVALID_BANK_ACCOUNT (404), MISSING_IMAGE (400), INSUFFICIENT_BALANCE (400).
+- [x] 3.7  `POST /api/payments/razorpay/order` — DONE. Creates Razorpay order + GatewayTransaction
+           (status: 'created'). Response `amount` is raw integer (not serializeMoney) —
+           intentional exception; Razorpay SDK requires minor-unit integer.
+- [x] 3.8  `POST /api/payments/razorpay/verify` — DONE. HMAC-SHA256 verify (timingSafeEqual)
+           before any DB read. GST split via GST_MULTIPLIER from constants. All three DB
+           writes in one Mongo transaction. Rejects if status !== 'created' (no double-credit).
+           instantBonus credit deferred to 3.8b (AppConfig). FORBIDDEN (403) added to errors.
+- [x] 3.8b `AppConfig` model + update verify route — DONE. Singleton model with
+           `gstMultiplier` (default 1.28) and `depositBonusRate` (default 1.0). Pre-save
+           validators. Verify route loads config with fallbacks; bonus = gstAmount × rate.
+           Both wallet.balance and wallet.instantBonus incremented in same Mongo transaction.
+- [x] 3.9  `GET /api/lobby/games` — DONE. Three sequential .lean() queries assembled via Maps
+           for O(1) lookup. bigBlind computed inline (stake × 2). All three levels filtered
+           to status: 'active'. No phantom fields.
+- [x] 3.10 `GET /api/lobby/desks/best` — DONE. $expr/$size for open-seat filter. Sorted
+           fullest-first. Returns { desk: null } on no match. modeId.isValid() guard
+           prevents CastError 500 on malformed ObjectId.
+- [x] 3.11 `GET /api/user/games/history` — DONE. Queries PokerGameArchive on existing
+           compound index. completedAt is a schema field (not timestamps), so lean type
+           augmentation is _id + createdAt only. Defensive skip if user entry missing.
+- [x] 3.12 Update mobile app `ApiCaller.js` — FILE NOT IN THIS REPO (mobile codebase).
+           Required changes documented here:
+           • Remove: requestOtp_Post, verifyLogin_Post
+           • Add: googleLogin_Post({ idToken, deviceType? }) → POST /api/auth/google
+           • Add: getUsernameSuggestions_Get() → GET /api/user/username/suggestions
+           • Add: setUsername_Patch({ username }) → PATCH /api/user/username
+           • Add: getGameHistory_Get({ page, limit }) → GET /api/user/games/history
+           • Update: wallet endpoint from /api/auth/fetchUserWallet → GET /api/user/wallet
+           • Update: all money fields in responses are now strings (e.g. "₹12.34") — display as-is
+           • Store JWT from login response; send as Authorization: Bearer <token> header
+- [x] 3.13 Verify every user route response matches contract — DONE. 12/13 routes fully
+           correct. 1 known exception (Razorpay order amount is raw integer — documented).
+           1 bug found: POST /api/auth/google only rejects 'suspended', not 'inactive'.
+           Fixed in 3.13-patch.
 
 ---
 
@@ -149,6 +197,8 @@ Order = dependency order. Each route reviewed before the next.
 - [ ] 4.12 `GET /api/admin/analytics/dashboard` — against new archive schema
 - [ ] 4.13 `GET /api/admin/analytics/games`
 - [ ] 4.14 `GET /api/admin/analytics/users/[userId]`
+- [ ] 4.15 `GET/PATCH /api/admin/config` — read/update AppConfig singleton (gstMultiplier,
+           depositBonusRate). Admin-only. GST change must show warning in admin UI.
 
 ---
 
@@ -220,10 +270,11 @@ mobile-app-to-backend pass — the final pre-launch gate.
       `userLeavesSeat`. Player buys 100, leaves with 162 → commission on the 62 profit. Buys 100,
       leaves ≤100 → no commission. Admin-configurable per-stake (add `commissionRate` to PokerMode).
       Audit trail via new `commissions` collection (probably). Management confirmed 2026-06-01.
-- [ ] **Mid-hand-leave chip handling** — what happens to a leaver's chips/bets when they leave mid-hand?
-      Sub-case A (hand continues with remaining players, leaver's bets stay in pot) vs Sub-case B
-      (hand voided / refunded). Upper-management decision pending before Phase 2 begins. Task 1.10's
-      leave-effects test deliberately tests rotation impact only, NOT chip outcome.
+- [x] **Mid-hand-leave chip handling** — DECIDED: Option A. Hand continues; committed bets (in
+      `game.rounds[].actions`) stay in the pot; only `seat.balanceAtTable` (uncommitted stack) is
+      returned to wallet immediately. Turn advances clockwise by seatNumber to next active player.
+      Note: the Phase 1 code had the chip behavior correct but the turn-advancement wrong (array
+      order instead of clockwise) — fixed as part of this decision. See LOGS.md 2026-06-04.
 - [ ] **Future v2 — restore Stud, Razz, Five-Card Draw to `PokerGameType`.** Major-version work, NOT
       a phase of this rebuild. Design needed: (a) first-actor rules per game (card-based bring-in for
       Stud/Razz, blinds-or-antes for 5-Draw), (b) bring-in semantics, (c) per-street acting-order logic.
