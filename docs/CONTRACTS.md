@@ -437,13 +437,13 @@ interface AdminAuthContext {
 - `payload: IJwtPayload` — full decoded payload.
 - `admin: IAdminDocument` — fresh DB load. Routes that need name/email/lastLogin use this; routes only doing CRUD use adminId.
 
-**ERRORS THROWN** (all `AuthError`, all map to HTTP 401 at the route layer)
-- `MISSING_AUTH_COOKIE` — no `token` cookie present
-- `INVALID_TOKEN` — bad signature, expired, or malformed (collapsed for security)
-- `MISSING_USER_ID` — verified token had no userId (defensive)
-- `WRONG_ROLE` — role isn't exactly `'admin'` (rejects user tokens, roleless tokens, legacy roles)
-- `ADMIN_NOT_FOUND` — token's userId doesn't resolve to an Admin record (deleted mid-session)
-- `ADMIN_NOT_ACTIVE` — admin exists but status isn't `'active'` (immediate revocation on disable)
+**ERRORS THROWN**
+- `AuthError('MISSING_AUTH_COOKIE')` → 401 — no `token` cookie present
+- `AuthError('INVALID_TOKEN')` → 401 — bad signature, expired, or malformed (collapsed for security)
+- `AuthError('MISSING_USER_ID')` → 401 — verified token had no userId (defensive)
+- `AuthError('WRONG_ROLE')` → 401 — role isn't exactly `'admin'` (rejects user tokens, roleless tokens, legacy roles)
+- `AuthError('ADMIN_NOT_FOUND')` → 401 — token's userId doesn't resolve to an Admin record (deleted mid-session)
+- `AuthError('ADMIN_NOT_ACTIVE')` → **403** — admin exists but status isn't `'active'` (immediate revocation on disable)
 
 **SIDE EFFECTS**
 - One `dbConnect()` call (idempotent — cached connection, not per-request cost).
@@ -1272,6 +1272,931 @@ Sorted newest-first by `completedAt`.
 - `[INVARIANT]` `completedAt` is a schema field on `IPokerGameArchive` (not a `timestamps` field) — it's always present and does not require lean type augmentation.
 - `[INVARIANT]` If `archive.players.find(p => p.userId.toString() === userId)` returns undefined (data integrity issue), the archive is silently skipped rather than throwing. The query filter `{ 'players.userId': userId }` makes this theoretically impossible but the guard prevents a runtime crash.
 
-# PHASE 4 — Admin API (STATUS: DRAFT — not built yet)
+# PHASE 4 — Admin API (STATUS: DRAFT)
+
+---
+
+## [POST /api/admin/auth/login]
+
+**SIGNATURE**
+```ts
+POST /api/admin/auth/login
+Body: { email: string; password: string }
+```
+
+**INPUT**
+- `email` — admin email, string, required. Lowercased + trimmed before lookup.
+- `password` — plaintext password, string, required.
+
+**OUTPUT**
+```ts
+{
+  message: 'Login successful';
+  adminId: string;
+  name: string;
+  email: string;
+}
+```
+Sets `Set-Cookie: token=<jwt>; HttpOnly; SameSite=Lax; Path=/; Max-Age=21600`.
+
+**ERRORS THROWN**
+- `AuthError('INVALID_CREDENTIALS')` → 401 — missing/non-string fields, admin not found, or wrong password (same code — no oracle).
+- `AuthError('ADMIN_NOT_ACTIVE')` → 403 — admin exists and password matches but `status !== 'active'`.
+
+**SIDE EFFECTS**
+- Writes `admin.lastLogin = new Date()` and calls `admin.save()` on successful login.
+- Sets an httpOnly cookie named `token` (TTL: 6h / 21600 s) containing a JWT signed with `role: 'admin'`.
+
+**INVARIANTS**
+- `[INVARIANT]` Cookie name is `'token'` (canonical per CLAUDE.md — admin auth uses httpOnly cookie, not Bearer header).
+- `[INVARIANT]` `role: 'admin'` must be passed explicitly to `signToken` — `IJwtPayload` makes `role` optional, which is a trap.
+- `[INVARIANT]` Status gate fires AFTER password check to prevent account enumeration via timing.
+- `[INVARIANT]` Admin email is stored lowercase by the schema; lookup uses `.toLowerCase().trim()` for belt-and-suspenders safety.
+
+---
+
+## [GET /api/admin/users]
+
+**SIGNATURE**
+```ts
+GET /api/admin/users?page=&limit=&search=&status=
+```
+
+**INPUT** (query params — all optional)
+- `page` — integer ≥ 1, default 1.
+- `limit` — integer 1–50, default 20. Capped at 50 server-side.
+- `search` — free-text string; regex-escaped before use; case-insensitive match against `username` OR `email`.
+- `status` — one of `'active' | 'inactive' | 'suspended'`; silently ignored if not a valid enum value.
+
+**OUTPUT**
+```ts
+{
+  users: Array<{
+    userId: string;
+    username: string;
+    email: string;
+    status: 'active' | 'inactive' | 'suspended';
+    mobileNumber: string | null;
+    usernameLocked: boolean;
+    createdAt: Date;
+    wallet: {
+      balance: string;        // formatted display string
+      instantBonus: string;   // formatted display string
+      lockedBonus: string;    // formatted display string
+      currency: string;
+    } | null;
+  }>;
+  pagination: { page: number; limit: number; total: number; totalPages: number };
+}
+```
+Sorted newest-first by `createdAt`.
+
+**ERRORS THROWN**
+- Any `AuthError` from `requireAdmin` → 401/403 depending on code.
+
+**SIDE EFFECTS**
+- Read-only. Two sequential queries: `User.find(filter)` + `Wallet.find({ userId: { $in: userIds } })`.
+
+**INVARIANTS**
+- `[INVARIANT]` `search` input is regex-escaped before building the `RegExp` — prevents injection via crafted usernames/emails.
+- `[INVARIANT]` Invalid `status` query param values are silently ignored (not a 400) — admin UI may send stale enum values.
+- `[INVARIANT]` `wallet` is `null` when no wallet document exists for the user (data integrity issue); never throws.
+- `[INVARIANT]` All three wallet balance fields are serialized via `serializeMoney` — never raw integers.
+
+---
+
+## [GET /api/admin/users/[userId]]
+
+**SIGNATURE**
+```ts
+GET /api/admin/users/:userId
+```
+
+**INPUT**
+- `userId` — route param, must be a valid MongoDB ObjectId string.
+
+**OUTPUT**
+```ts
+{
+  user: {
+    userId: string;
+    username: string;
+    email: string;
+    status: 'active' | 'inactive' | 'suspended';
+    mobileNumber: string | null;
+    usernameLocked: boolean;
+    deviceType: 'android' | 'ios' | 'unknown';
+    lastLogin: Date | null;
+    authProviders: Array<{ provider: string; providerId: string; linkedAt: Date }>;
+    createdAt: Date;
+    updatedAt: Date;
+  };
+  wallet: {
+    balance: string;        // formatted display string
+    instantBonus: string;   // formatted display string
+    lockedBonus: string;    // formatted display string
+    currency: string;
+  } | null;
+  banks: Array<{
+    bankId: string;
+    accountNumber: string;
+    bankName: string;
+    ifscCode: string;
+    accountHolderName: string;
+    isDefault: boolean;
+    status: 'active' | 'blocked' | 'inactive';
+    createdAt: Date;
+  }>;
+}
+```
+
+**ERRORS THROWN**
+- `ServiceError('NOT_FOUND')` → 404 — invalid ObjectId format OR no user document found (same code — no oracle).
+- Any `AuthError` from `requireAdmin` → 401/403.
+
+**SIDE EFFECTS**
+- Read-only. Three parallel queries via `Promise.all`: `User.findById`, `Wallet.findOne`, `BankAccount.find`.
+
+**INVARIANTS**
+- `[INVARIANT]` ObjectId format is validated BEFORE `dbConnect()` to avoid a round-trip on garbage input.
+- `[INVARIANT]` Invalid ObjectId and missing user both return `NOT_FOUND` (no oracle).
+- `[INVARIANT]` `wallet` is `null` when no wallet document exists — never throws.
+- `[INVARIANT]` `banks` is sorted newest-first by `createdAt`. Does NOT include bank transaction history.
+- `[INVARIANT]` All wallet money fields serialized via `serializeMoney` — never raw integers.
+
+---
+
+## [PATCH /api/admin/users/[userId]/status]
+
+**SIGNATURE**
+```ts
+PATCH /api/admin/users/:userId/status
+Body: { status: 'active' | 'inactive' | 'suspended' }
+```
+
+**INPUT**
+- `userId` — route param, valid MongoDB ObjectId string.
+- `status` — required string, one of `'active' | 'inactive' | 'suspended'`.
+
+**OUTPUT**
+```ts
+{
+  message: 'User status updated';
+  user: { userId: string; username: string; email: string; status: string };
+}
+```
+
+**ERRORS THROWN**
+- `AuthError('NOT_FOUND')` → 404 — invalid ObjectId format OR user not found (same code).
+- `AuthError('INVALID_STATE')` → 400 — `status` missing, non-string, or not in the valid enum set.
+- Any `AuthError` from `requireAdmin` → 401/403.
+
+**SIDE EFFECTS**
+- Writes `user.status` via `findByIdAndUpdate({ new: true, runValidators: true })`.
+
+**INVARIANTS**
+- `[INVARIANT]` ObjectId validated BEFORE `dbConnect()`.
+- `[INVARIANT]` Uses `AuthError` (not `ServiceError`) for NOT_FOUND — import kept to `@/lib/api/errors` only.
+- `[INVARIANT]` `runValidators: true` ensures the schema enum constraint fires on update.
+
+---
+
+## [POST /api/admin/users/[userId]/balance]
+
+**SIGNATURE**
+```ts
+POST /api/admin/users/:userId/balance
+Body: { bonusAmount: number }
+```
+
+**INPUT**
+- `userId` — route param, valid MongoDB ObjectId string.
+- `bonusAmount` — required integer (minor units). Positive = credit, negative = debit. Zero and non-integers are rejected. Must be a safe integer.
+
+**OUTPUT**
+```ts
+{
+  message: 'Locked bonus updated';
+  lockedBonus: string;   // formatted display string — new lockedBonus balance
+}
+```
+
+**ERRORS THROWN**
+- `AuthError('NOT_FOUND')` → 404 — invalid ObjectId format OR no wallet found for userId.
+- `AuthError('INVALID_STATE')` → 400 — `bonusAmount` missing, non-number, non-integer, non-safe, or zero.
+- `AuthError('INSUFFICIENT_BALANCE')` → 400 — `wallet.lockedBonus + bonusAmount < 0` (would go negative).
+- Any `AuthError` from `requireAdmin` → 401/403.
+
+**SIDE EFFECTS**
+- Atomic Mongo session: `Wallet.$inc({ lockedBonus: bonusAmount })` + `WalletTransaction.create(type='bonus', remark='adminAdjustment')`.
+- `WalletTransaction.amount.lockedBonus = Math.abs(bonusAmount)`, `amount.total = Math.abs(bonusAmount)` (always positive — direction encoded by sign of `bonusAmount`).
+
+**INVARIANTS**
+- `[INVARIANT]` `bonusAmount` is validated manually — NOT via `parseAmount`. It is stored as-is (signed integer minor units).
+- `[INVARIANT]` `amount.lockedBonus` and `amount.total` in the created WalletTransaction always equal `Math.abs(bonusAmount)` — direction is inferred from context, not stored in the amount breakdown.
+- `[INVARIANT]` Floor check (`lockedBonus + bonusAmount >= 0`) runs inside the Mongo session to prevent a race where two concurrent adjustments both pass the check but together go negative.
+- `[INVARIANT]` Only `lockedBonus` is modified — `balance` and `instantBonus` are untouched.
+
+---
+
+## [GET /api/admin/bankTransactions]
+
+**SIGNATURE**
+```ts
+GET /api/admin/bankTransactions?page=&limit=&status=&type=&userId=
+```
+
+**INPUT** (query params — all optional)
+- `page` — integer ≥ 1, default 1.
+- `limit` — integer 1–50, default 20. Capped at 50 server-side.
+- `status` — one of `'pending' | 'completed' | 'failed'`; silently ignored if invalid.
+- `type` — one of `'deposit' | 'withdraw'`; silently ignored if invalid.
+- `userId` — valid MongoDB ObjectId string; silently ignored if not a valid ObjectId format.
+
+**OUTPUT**
+```ts
+{
+  transactions: Array<{
+    transactionId: string;
+    userId: string;
+    type: 'deposit' | 'withdraw';
+    amount: string;          // formatted display string (minor units serialized)
+    currency: string;
+    status: 'pending' | 'completed' | 'failed';
+    imageUrl: string | null;
+    remark: string | null;
+    completedAt: Date | null;
+    createdAt: Date;
+    bankAccount: {
+      bankId: string;
+      accountNumber: string;
+      bankName: string;
+      ifscCode: string;
+      accountHolderName: string;
+      isDefault: boolean;
+      status: 'active' | 'blocked' | 'inactive';
+    } | null;
+  }>;
+  pagination: { page: number; limit: number; total: number; totalPages: number };
+}
+```
+Sorted newest-first by `createdAt`.
+
+**ERRORS THROWN**
+- Any `AuthError` from `requireAdmin` → 401/403.
+
+**SIDE EFFECTS**
+- Read-only. Uses `.populate('bankAccountId').lean()` — lean applied after populate.
+
+**INVARIANTS**
+- `[INVARIANT]` `bankAccount` is `null` when the referenced BankAccount document has been deleted — never throws.
+- `[INVARIANT]` All invalid filter param values are silently ignored — this endpoint never returns 400 for bad query params.
+- `[INVARIANT]` `amount` is serialized via `serializeMoney` — never a raw integer.
+- `[INVARIANT]` `userId` filter param must be a valid ObjectId string; non-ObjectId strings are silently ignored (not a 400).
+
+---
+
+## [PATCH /api/admin/bankTransactions/[transactionId]/status]
+
+**SIGNATURE**
+```ts
+PATCH /api/admin/bankTransactions/:transactionId/status
+Body: { status: 'completed' | 'failed' }
+```
+
+**INPUT**
+- `transactionId` — route param, valid MongoDB ObjectId string.
+- `status` — required, one of `'completed' | 'failed'`.
+
+**OUTPUT**
+```ts
+// Failed approval:
+{ message: 'Bank transaction rejected' }
+
+// Completed deposit:
+{ message: 'Deposit approved'; credited: string }   // credited = serializeMoney(cashAmount)
+
+// Completed withdrawal:
+{ message: 'Withdrawal approved' }
+```
+
+**ERRORS THROWN**
+- `AuthError('NOT_FOUND')` → 404 — invalid ObjectId, transaction not found, or wallet not found.
+- `AuthError('INVALID_STATE')` → 400 — invalid body status, OR `tx.status !== 'pending'` (double-processing guard).
+- `AuthError('INSUFFICIENT_BALANCE')` → 400 — withdrawal where `wallet.balance < tx.amount`.
+- Any `AuthError` from `requireAdmin` → 401/403.
+
+**SIDE EFFECTS**
+- **Failed**: `BankTransaction.status = 'failed'`, `completedAt = now`. No wallet writes. No session.
+- **Completed deposit** (Mongo session):
+  - `cashAmount = Math.round(gross / gstMultiplier)`, `gstAmount = gross - cashAmount`, `bonusAmount = Math.round(gstAmount * depositBonusRate)`.
+  - `Wallet.$inc({ balance: cashAmount, instantBonus: bonusAmount })`.
+  - `WalletTransaction.create(type='deposit', status='completed', amount.cashAmount, amount.instantBonus, amount.gst, amount.total=gross, bankTransactionId=tx._id)`.
+  - `BankTransaction.status = 'completed'`, `completedAt = now`.
+- **Completed withdrawal** (Mongo session):
+  - `Wallet.$inc({ balance: -tx.amount })`.
+  - `WalletTransaction.create(type='withdraw', status='completed', amount.cashAmount=tx.amount, amount.total=tx.amount, bankTransactionId=tx._id)`.
+  - `BankTransaction.status = 'completed'`, `completedAt = now`.
+
+**INVARIANTS**
+- `[INVARIANT]` Double-processing guard (`tx.status !== 'pending'`) fires BEFORE any session is opened.
+- `[INVARIANT]` Withdrawal balance check runs INSIDE the session to prevent a race where two concurrent approvals both pass but together over-debit the wallet.
+- `[INVARIANT]` GST split uses `AppConfig.findOne({})` with fallbacks `gstMultiplier=1.28`, `depositBonusRate=1.0`. Same formula as `POST /api/payments/razorpay/verify`.
+- `[INVARIANT]` `try/finally` wraps every session to guarantee `endSession()` even if `withTransaction` throws.
+- `[INVARIANT]` `credited` field only appears in the response for deposit approvals.
+
+---
+
+## [GET /api/admin/gatewayTransaction]
+
+**SIGNATURE**
+```ts
+GET /api/admin/gatewayTransaction?page=&limit=&status=&gateway=&userId=
+```
+
+**INPUT** (query params — all optional)
+- `page` — integer ≥ 1, default 1.
+- `limit` — integer 1–50, default 20. Capped at 50 server-side.
+- `status` — one of `'created' | 'pending' | 'completed' | 'failed'`; silently ignored if invalid.
+- `gateway` — one of `'razorpay' | 'stripe'`; silently ignored if invalid.
+- `userId` — valid MongoDB ObjectId string; silently ignored if not a valid ObjectId format.
+
+**OUTPUT**
+```ts
+{
+  transactions: Array<{
+    id: string;
+    userId: string;
+    gateway: 'razorpay' | 'stripe';
+    amount: string;              // formatted display string
+    currency: string;
+    status: 'created' | 'pending' | 'completed' | 'failed';
+    gatewayOrderId: string | null;
+    gatewayPaymentId: string | null;
+    createdAt: Date;
+  }>;
+  pagination: { page: number; limit: number; total: number; totalPages: number };
+}
+```
+Sorted newest-first by `createdAt`.
+
+**ERRORS THROWN**
+- Any `AuthError` from `requireAdmin` → 401/403.
+
+**SIDE EFFECTS**
+- Read-only. `Promise.all` for `countDocuments` + `find`.
+
+**INVARIANTS**
+- `[INVARIANT]` `gatewaySignature` is NEVER included in the response — it is the HMAC verification secret. Excluded via `.select('-gatewaySignature')` at the query level (not just omitted from the mapping).
+- `[INVARIANT]` `amount` is serialized via `serializeMoney` — never a raw integer.
+- `[INVARIANT]` All invalid filter param values are silently ignored — this endpoint never returns 400 for bad query params.
+
+---
+
+## [GET + POST /api/admin/poker]
+
+**GET SIGNATURE**
+```ts
+GET /api/admin/poker
+```
+**GET OUTPUT**
+```ts
+{
+  games: Array<{
+    id: string; gameType: string; description: string | null;
+    objective: string | null; status: 'active' | 'maintenance' | 'disabled';
+    createdAt: Date; updatedAt: Date;
+  }>;
+}
+```
+Sorted ascending by `gameType`. No pagination.
+
+**POST SIGNATURE**
+```ts
+POST /api/admin/poker
+Body: { gameType: string; description?: string; objective?: string; status?: string }
+```
+**POST OUTPUT** — 201
+```ts
+{
+  message: 'Poker game type created';
+  game: { id: string; gameType: string; description: string | null; objective: string | null; status: string };
+}
+```
+
+**ERRORS THROWN (POST)**
+- `AuthError('INVALID_STATE')` → 400 — `gameType` missing, non-string, or not in `["Texas Hold'em", "Omaha"]`.
+- `AuthError('INVALID_STATE')` → 400 — duplicate `gameType` (MongoServerError code 11000).
+- Any `AuthError` from `requireAdmin` → 401/403.
+
+**SIDE EFFECTS**
+- POST: `Poker.create(...)`. No cascade.
+
+**INVARIANTS**
+- `[INVARIANT]` Only `"Texas Hold'em"` and `"Omaha"` are valid game types in v1 (see FUTURE_V2.md for Stud/Razz/5-Card Draw).
+- `[INVARIANT]` `gameType` is unique — duplicate creates return 400 INVALID_STATE via 11000 catch.
+
+---
+
+## [PUT + DELETE /api/admin/poker/[id]]
+
+**PUT SIGNATURE**
+```ts
+PUT /api/admin/poker/:id
+Body: { description?: string; objective?: string; status?: string }
+```
+**PUT OUTPUT**
+```ts
+{
+  message: 'Poker game type updated';
+  game: { id: string; gameType: string; description: string | null; objective: string | null; status: string };
+}
+```
+
+**DELETE SIGNATURE**
+```ts
+DELETE /api/admin/poker/:id
+```
+**DELETE OUTPUT**
+```ts
+{ message: 'Poker game type deleted' }
+```
+
+**ERRORS THROWN**
+- `AuthError('NOT_FOUND')` → 404 — invalid ObjectId format OR document not found (same code).
+- `AuthError('INVALID_STATE')` → 400 (DELETE only) — `PokerMode.exists({ pokerId: id })` is truthy; cascade delete refused.
+- Any `AuthError` from `requireAdmin` → 401/403.
+
+**SIDE EFFECTS**
+- PUT: `Poker.findByIdAndUpdate({ new: true, runValidators: true })`.
+- DELETE: hard delete via `Poker.findByIdAndDelete`.
+
+**INVARIANTS**
+- `[INVARIANT]` `gameType` is NOT updatable via PUT — it is silently ignored if present in the request body.
+- `[INVARIANT]` DELETE is refused if any PokerMode references this Poker (cascade safety). Delete all modes first.
+- `[INVARIANT]` PUT status values outside `['active', 'maintenance', 'disabled']` are silently ignored.
+
+---
+
+## [GET + POST /api/admin/pokerModes]
+
+**GET SIGNATURE**
+```ts
+GET /api/admin/pokerModes?pokerId=&status=&mode=
+```
+**GET OUTPUT**
+```ts
+{
+  modes: Array<{
+    id: string; pokerId: string; gameType: string; bType: 'blinds' | 'antes';
+    stake: string; minBuyIn: string; maxBuyIn: string;  // formatted display strings
+    currency: string; mode: 'cash' | 'practice';
+    status: 'active' | 'disabled'; createdAt: Date; updatedAt: Date;
+  }>;
+}
+```
+All filters optional, silently ignored if invalid. Sorted `{ gameType: 1, stake: 1 }`.
+
+**POST SIGNATURE**
+```ts
+POST /api/admin/pokerModes
+Body: { pokerId: string; stake: number; minBuyIn: number; maxBuyIn: number;
+        currency?: string; mode?: string; status?: string }
+```
+All money fields in minor units. **POST OUTPUT** — 201, same shape as one mode entry.
+
+**ERRORS THROWN (POST)**
+- `AuthError('INVALID_STATE')` → 400 — invalid/missing pokerId, bad money values (via `parseAmount`), or `maxBuyIn <= minBuyIn`.
+- `AuthError('NOT_FOUND')` → 404 — `pokerId` doesn't resolve to a Poker document.
+
+**SIDE EFFECTS**
+- POST: `PokerMode.create(...)` with `bType` passed explicitly.
+
+**INVARIANTS**
+- `[INVARIANT]` `bType` MUST be passed explicitly on create — the pre-save hook that auto-sets it fires AFTER validation, so omitting it would fail schema validation (Phase 1 invariant: validators run before hooks).
+- `[INVARIANT]` `gameType` is inherited from the parent Poker document — never taken from the POST body.
+- `[INVARIANT]` `bType` is derived as: `BLINDS_GAMES.has(gameType) ? 'blinds' : 'antes'`. In v1 all game types are in BLINDS_GAMES.
+- `[INVARIANT]` All money fields serialized via `serializeMoney` in responses — never raw integers.
+
+---
+
+## [PUT + DELETE /api/admin/pokerModes/[id]]
+
+**PUT SIGNATURE**
+```ts
+PUT /api/admin/pokerModes/:id
+Body: { stake?: number; minBuyIn?: number; maxBuyIn?: number;
+        mode?: string; status?: string }
+```
+**PUT OUTPUT** — same shape as GET mode entry (with timestamps).
+
+**DELETE SIGNATURE**
+```ts
+DELETE /api/admin/pokerModes/:id
+```
+**DELETE OUTPUT** — `{ message: 'Poker mode deleted' }`
+
+**ERRORS THROWN**
+- `AuthError('NOT_FOUND')` → 404 — invalid ObjectId or document not found.
+- `AuthError('INVALID_STATE')` → 400 (PUT) — `maxBuyIn <= minBuyIn` cross-field constraint failed.
+- `AuthError('INVALID_STATE')` → 400 (DELETE) — `PokerDesk.exists({ pokerModeId: id })` is truthy; cascade delete refused.
+
+**SIDE EFFECTS**
+- PUT: loads current doc when any money field is present (for currency context + cross-field validation); then `findByIdAndUpdate({ new: true, runValidators: true })`.
+- DELETE: hard delete via `PokerMode.findByIdAndDelete`.
+
+**INVARIANTS**
+- `[INVARIANT]` `pokerId`, `gameType`, and `bType` are NOT updatable via PUT — silently ignored.
+- `[INVARIANT]` Cross-field `maxBuyIn > minBuyIn` check uses effective values: updated value if provided, current doc value otherwise. Requires loading the current doc.
+- `[INVARIANT]` DELETE refused if any PokerDesk has `pokerModeId` referencing this mode. Delete all desks first.
+
+---
+
+## [GET + POST /api/admin/pokerDesks]
+
+**GET SIGNATURE**
+```ts
+GET /api/admin/pokerDesks?pokerModeId=&status=&mode=
+```
+**GET OUTPUT**
+```ts
+{
+  desks: Array<{
+    id: string; pokerModeId: string; tableName: string;
+    gameType: string; bType: string; mode: string; currency: string;
+    status: 'active' | 'disabled' | 'closed';
+    stake: string; minBuyIn: string; maxBuyIn: string;  // formatted display strings
+    minToStart: number; minToContinue: number; maxPlayerCount: number; maxSeats: number;
+    seatedCount: number; currentGameStatus: string;
+    buttonSeatNumber: number | null; firstGameStartedAt: Date | null;
+    createdAt: Date; updatedAt: Date;
+  }>;
+}
+```
+All filters optional, silently ignored if invalid. `currentGame` object is NEVER included. Sorted newest-first.
+
+**POST SIGNATURE**
+```ts
+POST /api/admin/pokerDesks
+Body: { pokerModeId: string; tableName: string;
+        minToStart?: number; minToContinue?: number; maxPlayerCount?: number }
+```
+**POST OUTPUT** — 201, same shape as one desk entry.
+
+**ERRORS THROWN (POST)**
+- `AuthError('INVALID_STATE')` → 400 — missing/invalid pokerModeId or tableName; `maxPlayerCount < minToStart`; `minToContinue > minToStart`.
+- `AuthError('NOT_FOUND')` → 404 — pokerModeId doesn't resolve to a PokerMode document.
+
+**SIDE EFFECTS**
+- POST: `PokerDesk.create(...)` with all money/game config inherited from PokerMode.
+
+**INVARIANTS**
+- `[INVARIANT]` `gameType`, `bType`, `stake`, `minBuyIn`, `maxBuyIn`, `currency`, `mode` are inherited exclusively from the parent PokerMode — never taken from the POST body.
+- `[INVARIANT]` `maxSeats` is always set equal to `maxPlayerCount` on creation.
+- `[INVARIANT]` Cross-field checks (`maxPlayerCount >= minToStart`, `minToContinue <= minToStart`) run BEFORE `dbConnect()` in POST.
+- `[INVARIANT]` `currentGame` object is never included in any response — only `seatedCount` and `currentGameStatus`.
+- `[INVARIANT]` All money fields serialized via `serializeMoney` — never raw integers.
+
+---
+
+## [PUT + DELETE /api/admin/pokerDesks/[id]]
+
+**PUT SIGNATURE**
+```ts
+PUT /api/admin/pokerDesks/:id
+Body: { tableName?: string; status?: 'active' | 'disabled';
+        minToStart?: number; minToContinue?: number; maxPlayerCount?: number }
+```
+**PUT OUTPUT** — same shape as GET desk entry.
+
+**DELETE SIGNATURE**
+```ts
+DELETE /api/admin/pokerDesks/:id
+```
+**DELETE OUTPUT** — `{ message: 'Poker desk deleted' }`
+
+**ERRORS THROWN**
+- `AuthError('NOT_FOUND')` → 404 — invalid ObjectId or document not found.
+- `AuthError('INVALID_STATE')` → 400 (PUT) — cross-field constraint failed on effective merged values.
+- `AuthError('INVALID_STATE')` → 400 (DELETE) — `seats.length > 0` (players seated) or `currentGameStatus === 'in-progress'`.
+
+**SIDE EFFECTS**
+- PUT: always loads current doc first for cross-field merge-validation; then `findByIdAndUpdate({ new: true, runValidators: true })`.
+- DELETE: loads desk to check guards, then hard-deletes.
+
+**INVARIANTS**
+- `[INVARIANT]` `status: 'closed'` is NOT settable via PUT — it is engine-only (set by `gameService.forceCloseDesk`). Only `'active'` and `'disabled'` are admin-settable.
+- `[INVARIANT]` Inherited fields (`pokerModeId`, `gameType`, `bType`, `stake`, `minBuyIn`, `maxBuyIn`, `currency`, `mode`) are silently ignored in PUT — not updatable.
+- `[INVARIANT]` Pre-save hook cross-field validators do NOT run via `findByIdAndUpdate`. All cross-field checks are performed manually using effective (merged) values before the update call.
+- `[INVARIANT]` DELETE is refused if players are seated OR if a game is in progress. Both checks are necessary — a game can theoretically be in-progress with no active seats if all players folded/left in an edge case.
+
+---
+
+## [GET /api/admin/analytics/dashboard]
+
+**SIGNATURE**
+```ts
+GET /api/admin/analytics/dashboard
+```
+
+**OUTPUT**
+```ts
+{
+  users: {
+    total: number;
+    active: number;
+    newToday: number;          // createdAt >= start of today (midnight local)
+    newThisWeek: number;       // createdAt >= 7 days ago
+    newThisMonth: number;      // createdAt >= 30 days ago
+  };
+  bankTransactions: {
+    pendingDeposits: number;
+    pendingWithdrawals: number;
+    completedToday: number;    // completedAt >= start of today
+  };
+  games: {
+    totalArchived: number;
+    activeDesksNow: number;    // currentGameStatus === 'in-progress'
+    totalActiveDesks: number;  // status === 'active'
+  };
+  recentUsers: Array<{
+    userId: string; username: string; email: string;
+    status: string; createdAt: Date;
+  }>;
+  leaderboard: Array<{
+    userId: string; username: string;
+    totalWinnings: string;     // serializeMoney — may be negative (e.g. "₹-12.34")
+  }>;
+}
+```
+
+**ERRORS THROWN**
+- Any `AuthError` from `requireAdmin` → 401/403.
+
+**SIDE EFFECTS**
+- Read-only. All 11 underlying queries run concurrently via nested `Promise.all` (5 outer groups, each group its own `Promise.all`).
+
+**INVARIANTS**
+- `[INVARIANT]` All queries are parallel — no sequential DB calls. Structure: outer `Promise.all` with 5 groups; each group is its own `Promise.all`.
+- `[INVARIANT]` Leaderboard aggregates `$sum($subtract(endingStack, startingStack))` across all `PokerGameArchive` documents per player. Negative values are valid (net losers). Serialized via `serializeMoney`.
+- `[INVARIANT]` `recentUsers` is the 5 most recently registered users, sorted by `createdAt desc`. Does NOT filter by status.
+- `[INVARIANT]` Leaderboard `username` comes from `$first: '$players.username'` in the archive — may be stale if the user renamed. No live User lookup is performed.
+- `[INVARIANT]` `bankTransactions.completedToday` filters on `completedAt` (the settlement timestamp), not `createdAt` (the row creation timestamp).
+
+---
+
+## PHASE 4 — 4.13 GET /api/admin/analytics/games
+
+**STATUS:** DRAFT
+
+**FILE:** `src/app/api/admin/analytics/games/route.ts`
+
+**AUTH:** `requireAdmin` (httpOnly cookie `token`, role `'admin'`, admin status `'active'`)
+
+**QUERY PARAMS**
+| Param | Type | Notes |
+|---|---|---|
+| `page` | integer | Default 1 |
+| `limit` | integer | Default 20, capped 50 |
+| `deskId` | ObjectId string | Filter by deskId; ignored if invalid ObjectId |
+| `pokerModeId` | ObjectId string | Filter by pokerModeId; ignored if invalid ObjectId |
+| `gameType` | string | Must be in VALID_GAME_TYPES set; ignored otherwise |
+| `from` | date string | `completedAt >= from`; ignored if `new Date(from)` is invalid |
+| `to` | date string | `completedAt <= to`; ignored if `new Date(to)` is invalid |
+
+**OUTPUT**
+```ts
+{
+  games: Array<{
+    id: string;
+    deskId: string;
+    pokerModeId: string;
+    gameType: string;
+    currency: string;
+    totalPot: string;           // serializeMoney(totalPot, currency)
+    playerCount: number;        // archive.players.length
+    durationSeconds: number;    // Math.round((completedAt - startedAt) / 1000)
+    startedAt: Date;
+    completedAt: Date;
+    players: Array<{
+      userId: string;
+      username: string;
+      isWinner: boolean;
+      netChange: string;        // serializeMoney(endingStack - startingStack, currency) — may be negative
+    }>;
+  }>;
+  pagination: { page: number; limit: number; total: number; totalPages: number; };
+}
+```
+
+**ERRORS THROWN**
+- Any `AuthError` from `requireAdmin` → 401/403.
+
+**SIDE EFFECTS**
+- Read-only. `Promise.all([countDocuments, find])` — two parallel DB calls.
+
+**INVARIANTS**
+- `[INVARIANT]` `from`/`to` filter on `completedAt`, not `startedAt`. This is intentional — games in progress have no `completedAt`.
+- `[INVARIANT]` `netChange` may be negative (a player who lost chips). `serializeMoney` serializes signed integers correctly.
+- `[INVARIANT]` Sort is `{ completedAt: -1 }` — most recent first.
+- `[INVARIANT]` Invalid filter params (bad ObjectId, unknown gameType, unparseable date) are silently ignored — not an error. Malformed filters simply don't narrow the result set.
+
+---
+
+## PHASE 4 — 4.14 GET /api/admin/analytics/users/[userId]
+
+**STATUS:** DRAFT
+
+**FILE:** `src/app/api/admin/analytics/users/[userId]/route.ts`
+
+**AUTH:** `requireAdmin` (httpOnly cookie `token`, role `'admin'`, admin status `'active'`)
+
+**PATH PARAMS**
+| Param | Notes |
+|---|---|
+| `userId` | Must be a valid MongoDB ObjectId — invalid → 404 |
+
+**QUERY PARAMS**
+| Param | Type | Notes |
+|---|---|---|
+| `page` | integer | Default 1 |
+| `limit` | integer | Default 20, capped 50 |
+
+**OUTPUT**
+```ts
+{
+  stats: {
+    gamesPlayed: number;
+    wins: number;
+    winRate: string;            // e.g. "42.5%" — (wins/gamesPlayed * 100).toFixed(1) + '%'
+    totalNetChange: string;     // serializeMoney — may be negative
+    totalBet: string;           // serializeMoney
+    currency: 'INR' | 'USD';
+  } | null;                     // null if user has no archived games
+  games: Array<{
+    id: string;
+    gameType: string;
+    currency: 'INR' | 'USD';
+    totalPot: string;           // serializeMoney(totalPot, currency)
+    isWinner: boolean;
+    netChange: string;          // serializeMoney(endingStack - startingStack) — may be negative
+    startedAt: Date;
+    completedAt: Date;
+    durationSeconds: number;    // Math.round((completedAt - startedAt) / 1000)
+  }>;
+  pagination: { page: number; limit: number; total: number; totalPages: number; };
+}
+```
+
+**ERRORS THROWN**
+- `AuthError('NOT_FOUND')` — `userId` is not a valid ObjectId.
+- Any `AuthError` from `requireAdmin` → 401/403.
+
+**SIDE EFFECTS**
+- Read-only. Three parallel queries via `Promise.all`: aggregate (lifetime stats), `countDocuments`, `find` (paginated game list).
+
+**INVARIANTS**
+- `[INVARIANT]` ObjectId is validated BEFORE `dbConnect()`.
+- `[INVARIANT]` Aggregate uses double-match pattern: first `$match` on `players.userId` pre-filters documents (uses index), second `$match` after `$unwind` isolates this user's player record from multi-player documents.
+- `[INVARIANT]` `stats` is `null` if the aggregate returns no result (`statsResult[0]` is undefined). Do not return an empty stats object.
+- `[INVARIANT]` `netChange` and `totalNetChange` may be negative — `endingStack` can be 0 (all-in loss) while `startingStack` was positive. Serialized as-is.
+- `[INVARIANT]` Per-game player record is found via `archive.players.find(p => p.userId.toString() === userId)`. Fallback `isWinner: false` / `netChange: "₹0.00"` if somehow not found (should never happen given the find filter).
+
+---
+
+## PHASE 4 — 4.15 GET /api/admin/config + PATCH /api/admin/config
+
+**STATUS:** DRAFT
+
+**FILE:** `src/app/api/admin/config/route.ts`
+
+**AUTH:** `requireAdmin` (httpOnly cookie `token`, role `'admin'`, admin status `'active'`)
+
+---
+
+### GET /api/admin/config
+
+**OUTPUT**
+```ts
+{ gstMultiplier: number; depositBonusRate: number }
+```
+Returns `AppConfig.findOne({}).lean()`. If no document exists, returns defaults: `gstMultiplier: 1.28`, `depositBonusRate: 1.0`.
+
+**ERRORS THROWN**
+- Any `AuthError` from `requireAdmin` → 401/403.
+
+**SIDE EFFECTS**
+- Read-only.
+
+---
+
+### PATCH /api/admin/config
+
+**INPUT**
+```ts
+// body — both fields optional
+{ gstMultiplier?: number; depositBonusRate?: number }
+```
+
+| Field | Constraint |
+|---|---|
+| `gstMultiplier` | `typeof === 'number'` AND `>= 1` |
+| `depositBonusRate` | `typeof === 'number'` AND `>= 0` AND `<= 1` |
+
+**OUTPUT**
+```ts
+// if any field was updated:
+{ message: 'Config updated'; config: { gstMultiplier: number; depositBonusRate: number } }
+// if body had no valid fields (empty PATCH):
+{ gstMultiplier: number; depositBonusRate: number }  // same as GET
+```
+
+**ERRORS THROWN**
+- `AuthError('INVALID_STATE')` — `gstMultiplier` provided but not a number, or `< 1`.
+- `AuthError('INVALID_STATE')` — `depositBonusRate` provided but not a number, or outside `[0, 1]`.
+- Any `AuthError` from `requireAdmin` → 401/403.
+
+**SIDE EFFECTS**
+- `AppConfig.findOneAndUpdate({}, { $set: update }, { upsert: true, new: true })` — creates the singleton if absent.
+
+**INVARIANTS**
+- `[INVARIANT]` Manual validation is mandatory — pre-save hooks do NOT fire on `findOneAndUpdate`. `runValidators: true` does not fire pre-save hooks either.
+- `[INVARIANT]` `upsert: true` — the singleton is created on first PATCH if no document exists yet.
+- `[INVARIANT]` Empty PATCH body (no valid fields) returns current config with GET response shape, not an error.
+- `[INVARIANT]` `gstMultiplier` and `depositBonusRate` are plain decimal numbers — NOT money. Do NOT apply `serializeMoney`.
+- `[INVARIANT]` Defaults when no DB document exists: `gstMultiplier = 1.28`, `depositBonusRate = 1.0`. These must match the fallback values used in `src/app/api/payments/razorpay/verify/route.ts`.
+
+---
+
+## PHASE 5 — 5.1 src/server.ts + src/types/socketTypes.ts
+
+**STATUS:** DRAFT
+
+**FILES:**
+- `src/types/socketTypes.ts` — socket event payload type definitions
+- `src/server.ts` — standalone Socket.io server (NOT a Next.js route)
+
+**PROCESS:** standalone Node.js process on `process.env.SOCKET_PORT ?? 3001`. Started independently of `next dev`. Uses `http.createServer()` + `new Server(httpServer)`.
+
+---
+
+### Socket.io Event Protocol
+
+**Client → Server** (C→S)
+| Event | Payload type | Notes |
+|---|---|---|
+| `join` | `JoinPayload` | `{ deskId, seatNumber, buyInAmount }` |
+| `action` | `ActionPayload` | `{ deskId, action, amount? }` |
+| `leave` | `LeavePayload` | `{ deskId }` |
+
+**Server → Client** (S→C, room broadcast unless noted)
+| Event | Payload | Notes |
+|---|---|---|
+| `player:joined` | `{ desk }` | Redacted desk state |
+| `player:left` | `{ desk }` | Redacted desk state |
+| `game:start` | `{ desk }` | Redacted broadcast; then targeted `{ holeCards }` to each player |
+| `game:action` | `{ desk }` | Redacted desk state |
+| `game:roundAdvance` | `{ desk }` | Redacted desk state |
+| `game:showdown` | `{ desk, potResults }` | `potResults[].winners[].userId` serialized as string |
+| `desk:closed` | `{}` | Broadcast to room |
+| `turn:start` | `{ deadline: Date }` | Targeted (60s window) |
+| `error` | `{ code, message }` | Targeted — only to offending socket |
+
+---
+
+### Auth Middleware
+
+`io.use(...)` reads JWT from `socket.handshake.auth.token`. Verifies via `verifyToken`. Attaches `socket.data.userId` and `socket.data.role`. Rejects with `next(new Error('MISSING_AUTH'))` or `next(new Error('INVALID_TOKEN'))`.
+
+---
+
+### DeskRuntimeState
+
+Ephemeral in-memory state per desk. Never persisted.
+
+```ts
+interface DeskRuntimeState {
+  userSockets: Map<string, string>;   // userId → socketId
+  botSeats: Map<string, { strategy: 'easy' | 'medium' | 'hard' }>;
+  skipCounts: Map<string, number>;    // consecutive auto-folds (unused until 5.2)
+  turnTimer: ReturnType<typeof setTimeout> | null;
+  autoStartTimer: ReturnType<typeof setTimeout> | null;
+}
+const deskRuntime = new Map<string, DeskRuntimeState>();
+```
+
+---
+
+### Key Invariants
+
+**INVARIANTS**
+- `[INVARIANT]` `holeCards` are NEVER included in room broadcasts. Every player's `holeCards` is replaced with `[]` before the desk object is emitted to the room. Only the targeted `game:start` emit to each individual socket includes real hole cards.
+- `[INVARIANT]` No game logic lives in `server.ts` — every state-mutating decision goes through a `gameService` function.
+- `[INVARIANT]` No `withDeskLock` calls from `server.ts` — the service functions acquire the lock internally.
+- `[INVARIANT]` After `userLeavesSeat` returns `needsShowdown=true`, `handleNeedsShowdown` is called immediately. If `needsShowdown=false` but `activePlayers===0 && allInPlayers>=2`, `handleAllInRunout` is called instead.
+- `[INVARIANT]` `disconnect` does NOT call `userLeavesSeat`. Only removes the socket from `userSockets`. The 3-skip rule (task 5.2) handles eviction.
+- `[INVARIANT]` Auto-start timer is replaced (clearTimeout + new setTimeout) every time `scheduleAutoStart` is called for the same desk — prevents double-start races.
+- `[INVARIANT]` After `game:start` broadcast, a targeted `turn:start` is emitted to `currentTurnPlayer` with a 60s deadline.
+- `[INVARIANT]` Auto-start threshold: cold desk (firstGameStartedAt === null) → `desk.minToStart`; warm desk → `desk.minToContinue`.
 
 # PHASE 5 — Socket / Live engine (STATUS: DRAFT — not built yet)

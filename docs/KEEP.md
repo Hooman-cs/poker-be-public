@@ -111,6 +111,24 @@ for additive changes; do log signature changes.
 | `src/app/api/payments/razorpay/order/route.ts` | POST — creates Razorpay order + GatewayTransaction. Response amount is raw integer (SDK exception to outbound-string convention). |
 | `src/app/api/payments/razorpay/verify/route.ts` | POST — HMAC-SHA256 verify (timingSafeEqual), GST split, atomic wallet credit + WalletTransaction + GatewayTransaction update in one Mongo session. |
 | `src/models/appConfig.ts` | Singleton config model. Fields: gstMultiplier (default 1.28), depositBonusRate (default 1.0, range 0–1). Pre-save validators on both fields. |
+| `src/app/api/admin/config/route.ts` | Level 4 (GET + PATCH; manual validation; upsert singleton) |
+| `src/app/api/admin/analytics/users/[userId]/route.ts` | Level 4 (per-user stats via double-match aggregate + paginated game history) |
+| `src/app/api/admin/analytics/games/route.ts` | Level 4 (paginated PokerGameArchive list; date range filter; per-player netChange) |
+| `src/app/api/admin/analytics/dashboard/route.ts` | Level 4 (parallel aggregate dashboard; 5 Promise.all groups; leaderboard via PokerGameArchive aggregate) |
+| `src/app/api/admin/pokerDesks/route.ts` | Level 4 (GET + POST; inherits all money/game config from PokerMode) |
+| `src/app/api/admin/pokerDesks/[id]/route.ts` | Level 4 (PUT + DELETE; cross-field merge-validation; 'closed' status engine-only) |
+| `src/app/api/admin/pokerModes/route.ts` | Level 4 (GET + POST; bType passed explicitly per Phase 1 invariant) |
+| `src/app/api/admin/pokerModes/[id]/route.ts` | Level 4 (PUT + DELETE; cross-field min/max validation via current-doc load) |
+| `src/app/api/admin/poker/route.ts` | Level 4 (GET + POST; cascade guard on DELETE prevents orphaned modes) |
+| `src/app/api/admin/poker/[id]/route.ts` | Level 4 (PUT + DELETE; gameType not updatable) |
+| `src/app/api/admin/gatewayTransaction/route.ts` | Level 4 (thin route, gateway list; gatewaySignature excluded at query level) |
+| `src/app/api/admin/bankTransactions/[transactionId]/status/route.ts` | Level 4 (thin route, GST split + atomic ledger, most complex Phase 4 route) |
+| `src/app/api/admin/bankTransactions/route.ts` | Level 4 (thin route, bank transaction list with populate) |
+| `src/app/api/admin/users/[userId]/balance/route.ts` | Level 4 (thin route, lockedBonus adjustment with Mongo session) |
+| `src/app/api/admin/users/[userId]/status/route.ts` | Level 4 (thin route, user status update) |
+| `src/app/api/admin/users/[userId]/route.ts` | Level 4 (thin route, user profile + wallet + banks) |
+| `src/app/api/admin/users/route.ts` | Level 4 (thin route, admin list with wallet enrichment) |
+| `src/app/api/admin/auth/login/route.ts` | Level 4 (thin route handler, no business logic) |
 | `src/app/api/lobby/games/route.ts` | GET — nested games/modes/desks. Three .lean() queries with Map assembly. bigBlind = stake × 2. |
 | `src/app/api/lobby/desks/best/route.ts` | GET — matchmaking by modeId. $expr/$size open-seat filter. Fullest-first sort. Returns desk:null on no match. |
 | `src/app/api/user/games/history/route.ts` | GET — paginated PokerGameArchive history. completedAt is a schema field (not timestamps). Defensive skip on missing player entry. |

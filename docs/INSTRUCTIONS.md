@@ -105,44 +105,92 @@ Do not ask whether to write — always do it.
 <!-- Claude Desktop updates this section before each task. -->
 <!-- Clear this section when a phase is complete. -->
 
-**Task:** Phase 4.1 — POST /api/admin/auth/login
+**Phase 5, Task 5.1 — `src/server.ts` + `src/types/socketTypes.ts`**
 
-**Files to read first:**
-- `src/models/admin.ts` — IAdmin interface (status enum: `'active' | 'inactive'`), comparePassword method
-- `src/config/constants.ts` — ADMIN_TOKEN_TTL (`'6h'`), ADMIN_COOKIE_MAX_AGE_S (21600)
-- `src/utils/jwt.ts` — signToken signature (role is OPTIONAL in the type — must be passed explicitly)
-- `src/lib/api/errors.ts` — statusForCode map (to add/verify INVALID_CREDENTIALS + ADMIN_NOT_ACTIVE)
+### Files to read first
+- `docs/ARCHITECTURE.md` — full Phase 5 socket design section (events, DeskRuntimeState shape, edge-case catalog, bot subsystem design)
+- `docs/LOGS.md` — grep `[INVARIANT]` entries for Phase 5
+- `docs/CONTRACTS.md` — all gameService entries: `addUserToSeat`, `userLeavesSeat`, `handlePlayerAction`, `showdown`, `advanceGameRound`, `createGame`
+- `src/utils/jwt.ts` — verify signature (used for socket auth middleware)
+- `src/lib/api/errors.ts` — ServiceError subclass names (for mapping thrown errors to `error` event codes)
 
-**Files to create:**
-- `src/app/api/admin/auth/login/route.ts`
+### Files to create
+- `src/types/socketTypes.ts` — socket event payload types (NEW)
+- `src/server.ts` — standalone Socket.io server (NEW)
 
-**Files to modify:**
-- `src/lib/api/errors.ts` — add `INVALID_CREDENTIALS: 401` and `ADMIN_NOT_ACTIVE: 403` to statusForCode (additive only)
-- `docs/CONTRACTS.md` — add Phase 4.1 entry under the Phase 4 section
+### Implementation logic
 
-**Step-by-step implementation logic:**
-1. Parse body: extract `email` (string) and `password` (string). Missing or non-string → throw `AuthError('INVALID_CREDENTIALS', '...')`.
-2. `await dbConnect()`.
-3. `Admin.findOne({ email: email.toLowerCase().trim() })`. Not found → throw `AuthError('INVALID_CREDENTIALS', '...')` (same code — no oracle).
-4. `await admin.comparePassword(password)`. False → throw `AuthError('INVALID_CREDENTIALS', '...')`.
-5. `if (admin.status !== 'active')` → throw `AuthError('ADMIN_NOT_ACTIVE', '...')`.
-6. `admin.lastLogin = new Date(); await admin.save()`.
-7. `const token = signToken({ userId: admin._id.toString(), role: 'admin' }, ADMIN_TOKEN_TTL)` — **role: 'admin' MUST be explicit**.
-8. `const res = successResponse({ adminId: admin._id.toString(), name: admin.name, email: admin.email })`.
-9. `res.cookies.set('token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', maxAge: ADMIN_COOKIE_MAX_AGE_S, path: '/' })`.
-10. `return res`.
+**`src/types/socketTypes.ts`**
+Define payload interfaces for every event in the protocol table:
+- C→S: `JoinPayload`, `ActionPayload`, `LeavePayload`
+- S→C: `PlayerJoinedPayload`, `PlayerLeftPayload`, `GameStartPayload`, `GameActionPayload`, `GameRoundAdvancePayload`, `GameShowdownPayload`, `DeskClosedPayload`, `TurnStartPayload`, `ErrorPayload`
+- `HoleCardsPayload` — targeted after `game:start`: `{ holeCards: ICard[] }`
+- `RedactedGamePlayer` — player shape with `holeCards: []` always
 
-**Schema notes:**
-- Admin status enum is ONLY `'active' | 'inactive'` (no 'suspended').
-- `comparePassword` is an async instance method — must be `await admin.comparePassword(pw)`.
-- `lastLogin` field is `Date | null` — safe to assign `new Date()`.
+**`src/server.ts`**
 
-**Constraints:**
-- One top-level try/catch; end catch with `return errorResponse(err)`.
-- `role: 'admin'` must be passed explicitly to `signToken` — the IJwtPayload type makes it optional, which is a trap.
-- Cookie name must be `'token'` (canonical per CLAUDE.md).
-- Level 4 change to `errors.ts` — additive only, no existing entries changed.
-- Do NOT touch Level 1 or Level 2 files.
+1. **Setup**: standalone HTTP + Socket.io server on `process.env.SOCKET_PORT ?? 3001`. Import `gameService` functions directly. Import `verifyToken` from `@/utils/jwt`.
+
+2. **Auth middleware** (`io.use`): read JWT from `socket.handshake.auth.token`. Verify via `verifyToken`. Reject with `MISSING_AUTH` / `INVALID_TOKEN` if absent or invalid. Attach `socket.data.userId` and `socket.data.role` from the decoded payload.
+
+3. **`DeskRuntimeState` + `deskRuntime` map**: define the full interface (userSockets, botSeats, skipCounts, turnTimer, autoStartTimer). `const deskRuntime = new Map<string, DeskRuntimeState>()`.
+
+4. **Helper — `getOrCreateRuntime(deskId)`**: returns existing runtime or creates a fresh one with empty maps and null timers.
+
+5. **Helper — `broadcastDeskState(deskId, event, desk, extraPayload?)`**: strips `holeCards` from all players in `desk.currentGame?.players` before emitting to the room. Merges `extraPayload` into the broadcast if provided.
+
+6. **Helper — `targetedEmit(deskId, userId, event, payload)`**: resolves socketId via `runtime.userSockets.get(userId)`, emits only to that socket.
+
+7. **Helper — `scheduleAutoStart(deskId, delayMs = 3000)`**: clears existing `autoStartTimer`, sets a new 3s `setTimeout` that calls `createGame({ deskId })`. On success: emits `game:start` (redacted broadcast + targeted hole cards). On `InvalidStateError` (desk closed, already in progress): emits `desk:closed` if the error indicates closure, otherwise discards silently.
+
+8. **Helper — `handleNeedsShowdown(deskId)`**: calls `showdown({ deskId })`. On success: emits `game:showdown` to room with `potResults`. Then schedules auto-start if `desk.status !== 'closed'`.
+
+9. **Helper — `handleAllInRunout(deskId)`**: if after any action `activePlayers === 0 && allInPlayers >= 2`, loop `advanceGameRound` until `progression === 'showdown'`, then call `handleNeedsShowdown`.
+
+10. **`join` handler** (`socket.on('join', async (payload) => { ... })`):
+    - Validate `deskId`, `seatNumber`, `buyInAmount` present
+    - Call `addUserToSeat({ deskId, userId, seatNumber, buyInAmount })`
+    - `socket.join(deskId)`
+    - `runtime.userSockets.set(userId, socket.id)`
+    - `broadcastDeskState(deskId, 'player:joined', updatedDesk)`
+    - Check auto-start threshold: if `desk.seats.length >= desk.minToStart` (cold) or `>= WARM_GAME_MIN_PLAYERS` (warm), call `scheduleAutoStart(deskId)`
+    - On error: `targetedEmit` the `error` event with the ServiceError code
+
+11. **`action` handler** (`socket.on('action', async (payload) => { ... })`):
+    - Validate `deskId`, `action`, optional `amount`
+    - Call `handlePlayerAction({ deskId, userId, action, amount })`
+    - If `needsShowdown`: call `handleNeedsShowdown(deskId)`; return
+    - If `progression === 'nextRound'`: emit `game:roundAdvance` (redacted broadcast)
+    - Else: emit `game:action` (redacted broadcast)
+    - After action, check all-in runout condition and call `handleAllInRunout` if met
+    - Emit targeted `turn:start` to the new `currentTurnPlayer`
+    - On error: `targetedEmit` the `error` event
+
+12. **`leave` handler** (`socket.on('leave', async (payload) => { ... })`):
+    - Call `userLeavesSeat({ deskId, userId })`
+    - `socket.leave(deskId)`
+    - `runtime.userSockets.delete(userId)`
+    - If `needsShowdown`: call `handleNeedsShowdown(deskId)`; return
+    - `broadcastDeskState(deskId, 'player:left', updatedDesk)`
+    - If `updatedDesk.status === 'closed'`: emit `desk:closed`; clean up `deskRuntime` entry
+    - On error: `targetedEmit` the `error` event
+
+13. **`disconnect` handler**: remove from `userSockets` for any desks the socket was registered in. Do NOT call `userLeavesSeat` (3-skip handles eviction in 5.2).
+
+### Resolved decisions (do not re-derive)
+- Seating is socket-only via `join` event — no REST endpoint exists
+- Broadcasts are redacted (holeCards stripped); targeted hole-card emit follows `game:start`
+- `error` is a targeted S→C event `{ code: string, message: string }`
+- `DeskRuntimeState.userSockets` is the sole userId→socketId map; keep it updated on join, leave, disconnect
+- `turnTimer` and `skipCounts` fields exist in the struct but are unused until task 5.2 — initialize to `null` / empty Map
+
+### Constraints
+- NO game logic in server.ts — every decision is a gameService call
+- NO `withDeskLock` calls from server.ts — the service functions already acquire the lock internally
+- NO relative imports — `@/` alias only
+- `server.ts` is NOT a Next.js route — it is a standalone Node process; use `http.createServer` + `new Server(httpServer)`
+- Do NOT touch any Level 1 or Level 2 files
+- `src/hooks/useSocket.ts` is NOT modified — client-side hook, deferred to Phase 6
 
 ---
 

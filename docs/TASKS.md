@@ -183,21 +183,21 @@ Order = dependency order. Each route reviewed before the next.
 
 ## PHASE 4 — Admin API (rebuild to new models)
 
-- [ ] 4.1  `POST /api/admin/auth/login` — bcrypt, 6h JWT + 6h cookie, status gate, role `admin`
-- [ ] 4.2  `GET /api/admin/users` — paginated list + enrichment
-- [ ] 4.3  `GET /api/admin/users/[userId]` — detail
-- [ ] 4.4  `PATCH /api/admin/users/[userId]/status`
-- [ ] 4.5  `POST /api/admin/users/[userId]/balance` — add/remove lockedBonus (`bonusAmount` field)
-- [ ] 4.6  `GET /api/admin/bankTransactions` — list (populate `bankAccountId`)
-- [ ] 4.7  `PATCH /api/admin/bankTransactions/[transactionId]/status` — GST/ACID ledger (preserve rules)
-- [ ] 4.8  `GET /api/admin/pmgTransactions` — flattened gateway list
-- [ ] 4.9  `GET/POST /api/admin/poker` + `PUT/DELETE /api/admin/poker/[id]` — canonical taxonomy
-- [ ] 4.10 `GET/POST /api/admin/pokerModes` + `[id]` — inherit gameType from parent
-- [ ] 4.11 `GET/POST /api/admin/pokerDesks` + `[id]` — inherit from mode+poker
-- [ ] 4.12 `GET /api/admin/analytics/dashboard` — against new archive schema
-- [ ] 4.13 `GET /api/admin/analytics/games`
-- [ ] 4.14 `GET /api/admin/analytics/users/[userId]`
-- [ ] 4.15 `GET/PATCH /api/admin/config` — read/update AppConfig singleton (gstMultiplier,
+- [x] 4.1  `POST /api/admin/auth/login` — bcrypt, 6h JWT + 6h cookie, status gate, role `admin`
+- [x] 4.2  `GET /api/admin/users` — paginated list + enrichment
+- [x] 4.3  `GET /api/admin/users/[userId]` — detail
+- [x] 4.4  `PATCH /api/admin/users/[userId]/status`
+- [x] 4.5  `POST /api/admin/users/[userId]/balance` — add/remove lockedBonus (`bonusAmount` field)
+- [x] 4.6  `GET /api/admin/bankTransactions` — list (populate `bankAccountId`)
+- [x] 4.7  `PATCH /api/admin/bankTransactions/[transactionId]/status` — GST/ACID ledger (preserve rules)
+- [x] 4.8  `GET /api/admin/gatewayTransaction` — flattened gateway list (renamed from pmgTransactions to match GatewayTransaction model)
+- [x] 4.9  `GET/POST /api/admin/poker` + `PUT/DELETE /api/admin/poker/[id]` — canonical taxonomy
+- [x] 4.10 `GET/POST /api/admin/pokerModes` + `[id]` — inherit gameType from parent
+- [x] 4.11 `GET/POST /api/admin/pokerDesks` + `[id]` — inherit from mode+poker
+- [x] 4.12 `GET /api/admin/analytics/dashboard` — against new archive schema
+- [x] 4.13 `GET /api/admin/analytics/games`
+- [x] 4.14 `GET /api/admin/analytics/users/[userId]`
+- [x] 4.15 `GET/PATCH /api/admin/config` — read/update AppConfig singleton (gstMultiplier,
            depositBonusRate). Admin-only. GST change must show warning in admin UI.
 
 ---
@@ -206,6 +206,10 @@ Order = dependency order. Each route reviewed before the next.
 
 - [ ] 5.1  `src/server.ts` — rebuild as a THIN socket transport: receive event → call gameService → emit.
            No game logic in the server; it calls services/gameService (0.8b), which calls the engine.
+           C→S events: `join` `{ deskId, seatNumber, buyInAmount }` (calls addUserToSeat), `action`, `leave`.
+           S→C room broadcasts use redacted state (holeCards stripped). `game:start` additionally emits
+           targeted `{ holeCards }` to each player's socket. `error` (targeted) for failed actions/joins.
+           `DeskRuntimeState.userSockets` (userId→socketId) enables all targeted emits.
            **Convention reminder:** `handlePlayerAction` and `userLeavesSeat` both return
            `{ desk, needsShowdown }`. When `needsShowdown` is true, the socket handler MUST follow up
            with `showdown({ deskId })` to finalize the hand. Otherwise the hand sits in limbo.

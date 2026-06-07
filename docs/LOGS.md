@@ -21,6 +21,118 @@ it was built that way, LOGS.md is.
 
 ---
 
+## 2026-06-07 — DECISION — Phase 5 socket protocol gaps resolved
+
+Three gaps in the Phase 2 socket design were identified and resolved before task 5.1 begins.
+(1) **Seating via socket `join` event:** Phase 3 has no REST sit-down endpoint; seating is handled by a new C→S `join` event `{ deskId, seatNumber, buyInAmount }` which calls `gameService.addUserToSeat`. The Phase 2 event table omitted this C→S event. (2) **Hole card privacy:** the Phase 2 "full state on every event" rule conflicts with card secrecy. Resolution: all room broadcasts use a redacted payload (holeCards stripped from every player). `game:start` additionally emits a targeted `{ holeCards }` to each seated player's socket via the `userSockets` map. (3) **Error event:** a targeted `error` S→C event `{ code, message }` handles failed actions and failed joins without crashing the connection. `DeskRuntimeState` gains a `userSockets: Map<string, string>` field (userId → socketId) to support all targeted emits.
+
+[INVARIANT] Room broadcasts NEVER include hole cards. `holeCards` is stripped from all player entries before any `io.to(deskId).emit(...)` call. Targeted hole-card delivery is the only permitted path.
+
+[INVARIANT] `DeskRuntimeState.userSockets` is the sole source of truth for userId→socketId mapping. Updated on `join` (add) and on socket `disconnect` (remove). Never derived on-the-fly.
+
+[INVARIANT] The C→S `join` event is the seating mechanism for the socket layer. There is no REST endpoint for sitting at a desk — if one is added in a future phase, the socket `join` handler must guard against double-seating via the existing `AlreadySeatedError` from `addUserToSeat`.
+
+---
+
+
+Created AppConfig singleton read/update endpoint. GET returns findOne lean with hardcoded defaults if null. PATCH uses `'key' in body` for field presence detection (cleaner than !== undefined — catches explicit nulls), validates manually before findOneAndUpdate (pre-save hooks don’t fire on findOneAndUpdate), upsert: true to create on first write. Empty body returns current config without writing. `serializeConfig` helper deduplicates GET and PATCH response. Plain numbers throughout — no serializeMoney. Phase 4 complete: all 15 tasks verified.
+
+---
+
+## 2026-06-05 — TASK 4.14 — GET /api/admin/analytics/users/[userId] — PASS
+
+Created per-user analytics endpoint. ObjectId validated before dbConnect. Three parallel queries: double-match aggregate ($match → $unwind → $match → $group) for lifetime stats, countDocuments for pagination total, and paginated find sorted by completedAt desc. Stats null when no games exist. winRate computed as percentage string. Per-game player record found via players.find(); isWinner and netChange use optional chaining with ?? 0 fallback. 32 requirements verified line-by-line.
+
+---
+
+## 2026-06-05 — TASK 4.13 — GET /api/admin/analytics/games — PASS
+
+Created paginated PokerGameArchive list. Filters: deskId, pokerModeId, gameType (validated against full 5-value enum), from/to (completedAt range, silently ignored if date string is invalid). Promise.all for count + find. Per-game response includes durationSeconds (Math.round formula), and per-player netChange (endingStack - startingStack) serialized via serializeMoney — negative for net losers. All 17 requirements verified line-by-line against the generated source.
+
+---
+
+## 2026-06-05 — TASK 4.12 — GET /api/admin/analytics/dashboard — PASS
+
+Created the admin dashboard analytics endpoint. All 11 queries run concurrently via 5 outer Promise.all groups. User stats (5 countDocuments), bank transaction stats (3 countDocuments), game stats (2 countDocuments + 1 aggregate), recent users (top 5 by createdAt), and a leaderboard (PokerGameArchive $unwind + $group aggregation, sorted by net winnings). Minor deviation: the `gamesPlayed` field was omitted from the leaderboard aggregate and response — not a functional issue since per-game counts are available from 4.13.
+
+---
+
+## 2026-06-05 — TASK 4.11 — GET/POST /api/admin/pokerDesks + PUT/DELETE /api/admin/pokerDesks/[id] — PASS
+
+Created two route files for full PokerDesk CRUD. POST inherits all money and game config (gameType, bType, stake, minBuyIn, maxBuyIn, currency, mode) from the parent PokerMode, with cross-field validation (maxPlayerCount >= minToStart, minToContinue <= minToStart) done before dbConnect for cleaner errors. PUT always loads the current doc to compute effective merged values for the same cross-field checks since pre-save hooks don’t run with findByIdAndUpdate; status ‘closed’ is engine-only and excluded from admin-settable values. DELETE guards against seated players and in-progress games. One minor note: PUT doesn’t sync maxSeats when maxPlayerCount is updated — not a functional bug since the lobby query (3.10) uses maxPlayerCount only.
+
+---
+
+## 2026-06-05 — TASK 4.10 — GET/POST /api/admin/pokerModes + PUT/DELETE /api/admin/pokerModes/[id] — PASS
+
+Created two route files for full PokerMode CRUD. POST inherits gameType from the parent Poker document (via pokerId lookup) and explicitly derives and passes bType — mandatory per the Phase 1 invariant that the required-bType validator fires before the auto-set pre-save hook. PUT loads the current document whenever any money field is present, using it both for currency context (parseAmount) and cross-field min/max validation when only one of the two is updated. DELETE uses `PokerDesk.exists({ pokerModeId: id })` for cascade protection, which also confirmed the PokerDesk foreign key field is `pokerModeId`.
+
+---
+
+## 2026-06-05 — TASK 4.9 — GET/POST /api/admin/poker + PUT/DELETE /api/admin/poker/[id] — PASS
+
+Created two route files providing full CRUD for the Poker taxonomy. GET returns all entries (max 2 ever) sorted by gameType with no pagination. POST validates gameType against the v1 enum, creates the document, and catches MongoServerError 11000 (duplicate unique index) for a clean 400 response. PUT updates only description/objective/status — gameType is silently ignored, preserving the unique identifier PokerModes reference. DELETE runs a cascade check via `PokerMode.exists({ pokerId: id })` before hard-deleting; confirmed that the PokerMode foreign key field is `pokerId`.
+
+---
+
+## 2026-06-05 — TASK 4.8 — GET /api/admin/gatewayTransaction — PASS
+
+Created the paginated gateway transaction list endpoint. Filters: status, gateway, userId (all optional, silently ignored if invalid). Uses `Promise.all` for count + find. Claude Code improved on the spec by adding `.select('-gatewaySignature')` at the query level rather than just omitting the field from the mapping — the signature is never fetched from the DB, which is the correct defence-in-depth approach for a verification secret.
+
+---
+
+## 2026-06-05 — TASK 4.6 — GET /api/admin/bankTransactions — PASS
+
+Created paginated bank transaction list with `.populate('bankAccountId').lean()`. Filters: status, type, userId (all silently ignored if invalid). Populated bank account extracted into a nested `bankAccount` object; null if the account was deleted. Minor note: countDocuments and find run sequentially rather than via `Promise.all` — acceptable for this low-frequency admin endpoint.
+
+---
+
+## 2026-06-05 — TASK 4.5 — POST /api/admin/users/[userId]/balance — PASS
+
+Created admin lockedBonus adjustment endpoint. Body: `{ bonusAmount: number }` (positive adds, negative removes; manual validation, not parseAmount). Uses a Mongo session wrapping `Wallet.$inc` and `WalletTransaction.create`. Claude Code improved on the spec by moving the floor check inside the session rather than before it — prevents the race condition where two concurrent removals both pass an external check but together drive the balance negative. `try/finally` guarantees `session.endSession()`.
+
+---
+
+## 2026-06-05 — TASK 4.4 — PATCH /api/admin/users/[userId]/status — PASS
+
+Created admin user status update endpoint. Validates ObjectId before `dbConnect()`. Body `status` validated against the enum; invalid values return 400 INVALID_STATE. Uses `findByIdAndUpdate` with `{ new: true, runValidators: true }` so Mongoose enum validation fires at the DB level. Returns the updated user fields. Used `AuthError('NOT_FOUND')` correctly (not ServiceError).
+
+---
+
+## 2026-06-05 — TASK 4.2 — GET /api/admin/users — PASS
+
+Created paginated user list with wallet balance enrichment. Filters: search (username/email regex, escaped), status (optional). Wallet join uses a single `Wallet.find({ userId: { $in: [...] } })` then a `Map` for O(1) per-user lookup — same pattern as Phase 3.9 lobby. `.lean()` on both queries. User input is regex-escaped before passing to MongoDB.
+
+---
+
+## 2026-06-05 — TASK 4.7 — PATCH /api/admin/bankTransactions/[transactionId]/status — PASS
+
+Created the bank transaction approve/reject endpoint. Four-case 2×2 matrix (deposit×completed, deposit×failed, withdraw×completed, withdraw×failed) with GST split on deposit approvals and balance deduction on withdrawal approvals. All money writes are in a Mongo session; the double-processing guard fires before any session opens; withdrawal balance check runs inside the session to prevent concurrent over-debit. Implementation also added `bankTransactionId` as an audit field on WalletTransaction records — TypeScript compiled clean, meaning the schema supports it.
+
+---
+
+## 2026-06-05 — TASK 4.3 — GET /api/admin/users/[userId] — PASS
+
+Created admin user detail endpoint. Returns full user profile + wallet (serialized balances) + bank accounts list, fetched via three parallel `.lean()` queries (`User.findById`, `Wallet.findOne`, `BankAccount.find`). Validates ObjectId before `dbConnect()` to save a round-trip on garbage input. Claude Code included `authProviders`, `lastLogin`, and `deviceType` in the user object (additional fields beyond the spec) — fine for an admin view, since admins benefit from seeing which providers are linked and when the user last logged in. Game history and bank transaction history are NOT included — those live in 4.6 and 4.14 respectively. One implementation issue surfaced (ServiceError used instead of AuthError) — captured in the LESSON entry that follows.
+
+---
+
+## 2026-06-05 — LESSON — Admin routes should throw AuthError for not-found checks, not ServiceError
+
+Phase 4.3 used `ServiceError('NOT_FOUND', ...)` for the "user not found" check. Both AuthError and ServiceError route through `statusForCode` and produce a 404, so this is functionally correct. However, ServiceError requires importing from `@/services/gameService`, creating an unnecessary coupling between an admin user-detail route and the game service. Admin routes that need a NOT_FOUND response should throw `new AuthError('NOT_FOUND', ...)` instead — AuthError is already imported from `@/lib/api/errors` in every route.
+
+[INVARIANT] Admin routes use `AuthError('NOT_FOUND', ...)` for their own not-found checks (user not found, transaction not found, etc.). `ServiceError` is for errors propagated FROM the game service, not for route-level guard checks.
+
+---
+
+## 2026-06-05 — TASK 4.1 — POST /api/admin/auth/login — PASS
+
+Created `src/app/api/admin/auth/login/route.ts`. Email lookup + bcrypt + status gate + lastLogin update + 6h JWT in httpOnly cookie `token`. During implementation, `ADMIN_NOT_ACTIVE` was found to have been placed in `AUTH_CODES` (→ 401) rather than the switch case. Corrected to 403 — when an admin is authenticated (valid JWT) but deactivated, 403 Forbidden is the correct semantic (401 means "not authenticated"). `requireAdmin` also throws this code, so its behaviour changes from 401 to 403 on inactive-admin revocation. `CONTRACTS.md` requireAdmin entry updated to document per-code statuses. No downstream phase depends on this code yet.
+
+[INVARIANT] `ADMIN_NOT_ACTIVE` → HTTP 403. Valid JWT + disabled account = Forbidden, not Unauthorized. Do not move it back to AUTH_CODES.
+
+---
+
 ## 2026-06-05 — EVENT — LOGS.md ownership transferred to Claude Desktop
 
 Previously Claude Code maintained LOGS.md. Transferred to Claude Desktop because most entries capture design decisions made in the conversation layer, not implementation discoveries. Claude Code still surfaces discoveries via HANDOFF.md open questions; Claude Desktop writes the LOGS.md entry after verifying. Claude Code no longer writes to LOGS.md.

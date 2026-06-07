@@ -315,20 +315,27 @@ Design decisions locked in Phase 2:
 
 | Event | Direction | Meaning |
 |---|---|---|
-| `player:joined` | S → C | A user sat down; includes updated desk state |
-| `player:left` | S → C | A user left; includes updated desk state |
-| `game:start` | S → C | New hand started; each recipient gets their own hole cards |
-| `game:action` | S → C | A player acted; includes updated game state |
-| `game:roundAdvance` | S → C | New community cards dealt; includes updated game state |
+| `player:joined` | S → C | A user sat down; redacted desk state broadcast to room |
+| `player:left` | S → C | A user left; redacted desk state broadcast to room |
+| `game:start` | S → C | New hand started; redacted state broadcast to room + targeted `{ holeCards }` to each player's socket |
+| `game:action` | S → C | A player acted; redacted desk state broadcast to room |
+| `game:roundAdvance` | S → C | New community cards dealt; redacted desk state broadcast to room |
 | `game:showdown` | S → C | Hand complete; pot results + winner breakdown |
 | `desk:closed` | S → C | Desk force-closed; all players removed |
 | `turn:start` | S → C (targeted) | It is this player's turn; includes 60s deadline |
 | `turn:timeout` | S → C | Timer expired; player was auto-folded |
+| `error` | S → C (targeted) | An action or join failed; `{ code: string, message: string }` — sent only to the offending socket |
+| `join` | C → S | Player sits at a desk `{ deskId, seatNumber, buyInAmount }` |
 | `action` | C → S | Player submits an action `{ deskId, action, amount? }` |
 | `leave` | C → S | Player requests to leave the desk |
 
-**State broadcast.** Full desk state on every event. Desk documents are small; full-state
-broadcasts are simpler and eliminate client drift from missed delta patches.
+**State broadcast.** Redacted desk state on every room broadcast. All players receive the
+full game state except `holeCards`, which are stripped from every player entry in the
+broadcast payload. This keeps the model simple (one broadcast per event, no per-player
+delta logic) while preventing card leakage. The one exception: after the redacted room
+broadcast for `game:start`, the server emits a targeted `{ holeCards }` to each seated
+player's socket individually. Targeted emits — for hole cards, `turn:start`, and `error` —
+resolve `userId → socketId` via the `userSockets` map in `DeskRuntimeState`.
 
 **Turn timer.** 60s, server-side `setTimeout` per turn. On expiry: auto-fold via
 `handlePlayerAction({ action: 'fold' })`. Timer cancelled immediately on valid incoming action.
@@ -347,6 +354,7 @@ The 3s delay gives clients time to display results before the next hand begins.
 **Ephemeral server state shape** (lives in `src/server.ts`, never persisted):
 ```ts
 interface DeskRuntimeState {
+  userSockets: Map<string, string>;   // userId → socketId (enables targeted emits)
   botSeats: Map<string, { strategy: 'easy' | 'medium' | 'hard' }>; // botUserId → config
   skipCounts: Map<string, number>;  // userId → consecutive auto-folds
   turnTimer: ReturnType<typeof setTimeout> | null;

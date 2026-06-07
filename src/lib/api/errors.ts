@@ -83,8 +83,8 @@ const AUTH_CODES = new Set<string>([
   'WRONG_ROLE',
   'MISSING_AUTH_COOKIE',
   'ADMIN_NOT_FOUND',
-  'ADMIN_NOT_ACTIVE',
   'INVALID_GOOGLE_TOKEN',
+  'INVALID_CREDENTIALS',
 ]);
 
 /**
@@ -112,6 +112,7 @@ function statusForCode(code: string): number {
 
     case 'ACCOUNT_SUSPENDED':
     case 'FORBIDDEN':
+    case 'ADMIN_NOT_ACTIVE':
       return 403;
 
     case 'MISSING_ID_TOKEN':
