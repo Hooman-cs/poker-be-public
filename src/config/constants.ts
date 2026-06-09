@@ -153,8 +153,8 @@ export const NEXT_GAME_DELAY_MS = 5 * 1000;
 // Practice mode
 // -----------------------------------------------------------------------------
 
-/** Starting stack (MINOR units) every player + bot begins a practice session with. */
-export const PRACTICE_STARTING_STACK_MINOR = toMinor(1000); // 1000 major -> 100000 minor
+/** Canonical source of the practice buy-in (minor units). Use this — never inline 100000 or 1000. */
+export const PRACTICE_STARTING_CHIPS = 100000;
 
 /** Difficulty levels selectable for practice-mode bots. */
 export const BOT_DIFFICULTIES = ['easy', 'medium', 'hard'] as const;

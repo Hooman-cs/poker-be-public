@@ -56,7 +56,7 @@ addUserToSeat(input: AddUserToSeatInput): Promise<IPokerDeskDocument>
 - `deskId: string` — desk's `_id` as string
 - `userId: ObjectId | string` — the user seating themselves
 - `seatNumber: number` — which seat at the desk
-- `buyInAmount: number` — minor units. **CASH MODE:** validated against `[desk.minBuyIn, desk.maxBuyIn]`. **PRACTICE MODE:** IGNORED — practice always uses `PRACTICE_STARTING_STACK_MINOR` regardless of what's passed.
+- `buyInAmount: number` — minor units. **CASH MODE:** validated against `[desk.minBuyIn, desk.maxBuyIn]`. **PRACTICE MODE:** IGNORED — practice always uses `PRACTICE_STARTING_CHIPS` (100000) regardless of what's passed.
 
 **OUTPUT**
 - The updated `IPokerDeskDocument` after save (seat appended).
@@ -79,6 +79,7 @@ addUserToSeat(input: AddUserToSeatInput): Promise<IPokerDeskDocument>
 **INVARIANTS**
 - Money in/out of wallet ↔ seat is always integer minor units.
 - After a successful cash-mode call, `wallet.balance + seat.balanceAtTable` equals the pre-call wallet balance.
+- Gate is `desk.isPractice` (boolean). `isCashMode(desk.mode)` must NOT be used as the practice gate per LOGS.md 2026-06-07.
 
 ---
 
@@ -96,6 +97,7 @@ userLeavesSeat(input: UserLeavesSeatInput): Promise<UserLeavesSeatResult>
 **OUTPUT**
 - `desk: IPokerDeskDocument` — updated desk after seat removal
 - `needsShowdown: boolean` — **TRUE** if the leave dropped the table to ≤1 active/all-in player. The caller MUST invoke `showdown({ deskId })` next.
+- `finalChips: number | null` — **practice mode only:** the player's `balanceAtTable` at the moment of leaving (minor units). **Always `null` in cash mode.** Used by `server.ts` to close the `PracticeSession` record.
 
 **ERRORS**
 - `NotFoundError` — desk doesn't exist
@@ -106,13 +108,14 @@ userLeavesSeat(input: UserLeavesSeatInput): Promise<UserLeavesSeatResult>
 - Mid-hand: if the leaver was an active player, marks them `'folded'`. If they were the current turn player, advances `currentTurnPlayer` to the next active player. (Without this, the game would stall.)
 - Cash mode + `balanceAtTable > 0`: wallet credit + `WalletTransaction(type='deskWithdraw')` + seat removal, atomic.
 - Cash mode + `balanceAtTable == 0`: just removes the seat (no wallet writes).
-- Practice mode: just removes the seat.
+- Practice mode: removes the seat; captures `finalChips = seat.balanceAtTable` for the caller.
 - Runs inside `withDeskLock(deskId)`.
 
 **INVARIANTS**
 - A leave never leaves `currentTurnPlayer` pointing at a folded player.
 - `needsShowdown === true` ⇒ caller must call `showdown` to finalize the hand.
 - **Between-hand closure (LOGS.md 2026-06-01):** after the seat is removed, if `desk.currentGame === null` AND `desk.firstGameStartedAt !== null` (warm desk) AND `desk.seats.length < 3`, `forceCloseDesk` is called. All remaining players are forced to leave (chips returned to wallets) and desk transitions to 'closed'. Mid-hand leaves do NOT trigger this — the post-showdown check handles it after the hand completes.
+- `finalChips` is ALWAYS non-null when `desk.isPractice === true`. The socket server must check this to close the PracticeSession record (LOGS.md 2026-06-07).
 
 ---
 
@@ -2128,6 +2131,60 @@ Returns `AppConfig.findOne({}).lean()`. If no document exists, returns defaults:
 
 ---
 
+## PHASE 5 — 5.3c GET /api/admin/practiceSessions
+
+**STATUS:** STABLE
+
+**AUTH:** `requireAdmin` (httpOnly `token` cookie, role `'admin'`).
+
+**QUERY PARAMS**
+| Param | Default | Constraint |
+|-------|---------|------------|
+| `page` | 1 | ≥ 1 |
+| `limit` | 20 | 1–100 |
+
+**OUTPUT**
+```ts
+{
+  sessions: Array<{
+    _id: string;
+    user: { id: string; username: string; email: string } | null; // null if user deleted
+    deskId: string;
+    startedAt: Date;
+    endedAt: Date | null;
+    finalChips: string | null; // formatted money string (e.g. "₹1,000.00") or null if session still open
+  }>;
+  total: number;
+  page: number;
+  totalPages: number;
+}
+```
+
+**INVARIANTS**
+- `finalChips` is always formatted via `serializeMoney(..., 'INR')` — never raw minor units.
+- Sorted by `startedAt` descending.
+- `userId` is populated; the raw ObjectId is not exposed.
+
+---
+
+## PHASE 5 — 5.3c POST /api/admin/pokerDesks — `isPractice` field
+
+**STATUS:** STABLE (additive change to existing 4.8 endpoint)
+
+**CHANGE:** Added optional `isPractice: boolean` to the POST body. Defaults to `false` if absent.
+
+**UPDATED INPUT FIELD**
+```ts
+isPractice?: boolean  // default false — desk will use PRACTICE_STARTING_CHIPS stack, no wallet ops
+```
+
+**INVARIANTS**
+- `isPractice` is parsed as `body.isPractice === true` — any other value (string, number) is treated as `false`.
+- All other POST fields and validation logic are unchanged.
+- `serializeDesk` does not yet expose `isPractice` in the GET/POST response; it is stored on the document.
+
+---
+
 ## PHASE 5 — 5.1 src/server.ts + src/types/socketTypes.ts
 
 **STATUS:** DRAFT
@@ -2178,12 +2235,34 @@ Ephemeral in-memory state per desk. Never persisted.
 interface DeskRuntimeState {
   userSockets: Map<string, string>;   // userId → socketId
   botSeats: Map<string, { strategy: 'easy' | 'medium' | 'hard' }>;
-  skipCounts: Map<string, number>;    // consecutive auto-folds (unused until 5.2)
+  skipCounts: Map<string, number>;    // userId → consecutive auto-folds (3-skip eviction)
   turnTimer: ReturnType<typeof setTimeout> | null;
+  turnTimerUserId: string | null;     // which player the current turnTimer belongs to
   autoStartTimer: ReturnType<typeof setTimeout> | null;
 }
 const deskRuntime = new Map<string, DeskRuntimeState>();
 ```
+
+---
+
+### Turn Timer
+
+`startTurnTimer(deskId, userId)` — clears any existing `runtime.turnTimer` and sets a new 60s `setTimeout`. On expiry:
+1. Increment `skipCounts` for `userId`.
+2. Auto-fold via `handlePlayerAction({ action: 'fold' })`.
+3. Emit `turn:timeout` room broadcast `{ userId }`.
+4. **3-skip path** (skipCount >= 3): resolve fold result (showdown/broadcast/runout), then call `userLeavesSeat` and handle result like the `leave` handler.
+5. **Normal path** (skipCount < 3): handle fold result like the `action` handler, then call `startTurnTimer` for the new `currentTurnPlayer`.
+6. **Race** (`InvalidStateError` from fold): player already acted before timer fired; silently discard — the `action` handler has already cleared the timer and set the next one.
+
+---
+
+### 3-Skip Disconnect Rule
+
+- Counter incremented by `startTurnTimer` expiry callback.
+- Counter reset (`skipCounts.delete(userId)`) on any successful voluntary `action`.
+- At count >= 3: forced `userLeavesSeat` eviction; cleanup identical to the `leave` handler.
+- Counter NOT reset on `disconnect` alone — persists across reconnects intentionally.
 
 ---
 
@@ -2196,7 +2275,141 @@ const deskRuntime = new Map<string, DeskRuntimeState>();
 - `[INVARIANT]` After `userLeavesSeat` returns `needsShowdown=true`, `handleNeedsShowdown` is called immediately. If `needsShowdown=false` but `activePlayers===0 && allInPlayers>=2`, `handleAllInRunout` is called instead.
 - `[INVARIANT]` `disconnect` does NOT call `userLeavesSeat`. Only removes the socket from `userSockets`. The 3-skip rule (task 5.2) handles eviction.
 - `[INVARIANT]` Auto-start timer is replaced (clearTimeout + new setTimeout) every time `scheduleAutoStart` is called for the same desk — prevents double-start races.
-- `[INVARIANT]` After `game:start` broadcast, a targeted `turn:start` is emitted to `currentTurnPlayer` with a 60s deadline.
+- `[INVARIANT]` After `game:start` broadcast, `startTurnTimer(deskId, currentTurnPlayer)` is called — this both emits a targeted `turn:start { deadline }` to the player's socket AND starts the 60s server-side auto-fold timer. There is no separate targeted emit for turn:start elsewhere.
 - `[INVARIANT]` Auto-start threshold: cold desk (firstGameStartedAt === null) → `desk.minToStart`; warm desk → `desk.minToContinue`.
+
+---
+
+## PHASE 5 — 5.3a PracticeSession model
+
+### models.PracticeSession
+
+**SIGNATURE**
+```ts
+// Schema fields
+{
+  userId:     ObjectId   // ref: 'User', required, indexed
+  deskId:     ObjectId   // ref: 'PokerDesk', required
+  startedAt:  Date       // required, default: Date.now
+  endedAt?:   Date       // set when session ends
+  finalChips?: number    // minor units; null until session ends
+}
+```
+
+**PURPOSE**
+Tracks a user's practice-mode session from seat-join to seat-leave. Created by `server.ts` on `join` for practice desks; closed (endedAt + finalChips written) on `leave` using `finalChips` from `userLeavesSeat`.
+
+**INDEXES**
+- `{ userId: 1, startedAt: -1 }` — compound, for history queries
+- `{ userId: 1 }` — single, for per-user lookups
+
+**INVARIANTS**
+- `timestamps: false` — `startedAt`/`endedAt` are explicit, no auto Mongoose timestamps.
+- `finalChips` is always in minor units (paise). Never major.
+- A session without `endedAt` is an open/active session.
+
+---
+
+## PHASE 5 — 5.3b botService.addBotToSeat
+
+### botService.addBotToSeat
+
+**SIGNATURE**
+```ts
+addBotToSeat(input: { deskId: string; seatNumber: number; strategy: BotDifficulty }): Promise<AddBotToSeatResult>
+```
+
+**INPUT**
+- `deskId: string` — desk's `_id`
+- `seatNumber: number` — which seat to occupy
+- `strategy: BotDifficulty` — `'easy' | 'medium' | 'hard'` (stored in `DeskRuntimeState.botSeats` by caller)
+
+**OUTPUT**
+- `desk: IPokerDeskDocument` — updated desk after bot seat added
+- `botUserId: Types.ObjectId` — synthetic ObjectId; no DB User record created
+
+**ERRORS**
+- `NotFoundError` — desk not found
+- `InvalidStateError` — desk is not a practice desk, is closed, seat is taken, or desk is full
+
+**SIDE EFFECTS**
+- Appends a seat with `balanceAtTable = PRACTICE_STARTING_CHIPS` to the desk document. No wallet writes (practice mode).
+- Runs inside `withDeskLock(deskId)`.
+
+**INVARIANTS**
+- [INVARIANT] Only valid on practice desks (`desk.isPractice === true`). Throws on cash desks.
+- [INVARIANT] Never call `addBotToSeat` from inside `withDeskLock` — it acquires the lock internally and will deadlock.
+- [INVARIANT] `PRACTICE_STARTING_CHIPS` is the only permitted source for `balanceAtTable`. Never hardcode 100000.
+
+---
+
+## PHASE 5 — 5.3b lib/bots BotStrategy
+
+### lib/bots.BotStrategy
+
+**SIGNATURE**
+```ts
+interface BotStrategy {
+  selectAction(game: IPokerGame, botUserId: Types.ObjectId): BotAction;
+}
+interface BotAction {
+  action: 'fold' | 'check' | 'call' | 'raise' | 'all-in';
+  amount?: number; // minor units; required for raise only
+}
+function getBotStrategy(difficulty: BotDifficulty): BotStrategy
+```
+
+**INPUT**
+- `game: IPokerGame` — current game state (lean or hydrated)
+- `botUserId: Types.ObjectId` — the bot's synthetic userId
+
+**OUTPUT**
+- `BotAction` with `action` and optional `amount` (required for `'raise'`)
+
+**IMPLEMENTATIONS**
+- `EasyStrategy` — check when free, call if affordable, fold if not. Never raises.
+- `MediumStrategy` — pot-odds aware (call if odds < 0.35); raises to `floor(pot × 0.75)` on a pair.
+- `HardStrategy` — position-aware; tight (odds < 0.25) in early position, raises to pot in late position with a pair.
+
+**INVARIANTS**
+- `getBotStrategy` is the only permitted factory for `BotStrategy` instances.
+- Import from `@/lib/bots/index` — not from a relative path.
+
+---
+
+## PHASE 5 — 5.6 scripts/tier2Smoke.ts
+
+**PURPOSE** — Tier-2 end-to-end smoke test. Exercises the full stack (HTTP + Socket.io) without importing from `@/services/gameService`. Requires `npm run dev` running on ports 3000 and 3001.
+
+**USAGE**
+```
+npx tsx --env-file=.env.local scripts/tier2Smoke.ts [--keep]
+```
+
+**WHAT IT CHECKS**
+1. `GET /api/lobby/games` — 200, non-empty `games` array
+2. `GET /api/lobby/desks/best?modeId=<id>` — 200, `desk` not null
+3. Socket auth rejection — bad token → `connect_error` with message `'INVALID_TOKEN'`
+4. Full 5-hand lifecycle (mirrors playLifecycle.ts) via socket events only
+5. Room broadcasts have redacted `holeCards` (empty arrays for all players)
+6. Targeted `game:start` delivers 2 hole cards to each player's socket
+7. Mid-hand leave (Hand 3): `userLeavesSeat` works while a game is in progress
+8. Force-close (after Hand 5): `desk:closed` event emitted to remaining sockets
+9. Join on closed desk → `error` event
+10. Money conservation across all 5 hands
+11. 5 archive documents with non-empty `username` on all players
+
+**KEY DESIGN DECISIONS**
+- `turn:start` listeners are registered BEFORE awaiting `game:start` to avoid racing the server's immediate `turn:start` emit.
+- `gameStartP` parameter on `playHandViaSocket`: pre-registered promise passed when a between-hand leave could race the 3 s auto-start timer. Register before emitting leave; pass to the next `playHandViaSocket` call.
+- Hand 3 uses `Promise.race`-style `h3Done` (resolves on first `game:showdown` from any remaining socket) because the mid-hand leaver's socket leaves the room before the broadcast fires.
+- Force-close leave: waits for `desk:closed` on an OBSERVER socket (not the leaver) because the leaver has left the room before the server emits it.
+
+**INVARIANTS**
+- [INVARIANT] Do NOT import from `@/services/gameService`.
+- [INVARIANT] Pre-register `game:start` (`waitFor`) BEFORE emitting a between-hand leave.
+- [INVARIANT] `game:start` arrives twice per hand per socket: (1) room broadcast `{ desk }` (holeCards all empty); (2) targeted `{ holeCards }`. Both listeners must be registered before the first arrives.
+
+---
 
 # PHASE 5 — Socket / Live engine (STATUS: DRAFT — not built yet)

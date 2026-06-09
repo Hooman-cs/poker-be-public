@@ -90,6 +90,23 @@ Per `FROZEN_CORE_EDITS.md`. After this phase is green and reviewed, these files 
            Originally planned as 4 separate scripts (playOneHand-4p, playOneHand-6p, playThreeHands,
            playHandWithLeave); combined into the lifecycle script per user's "test it as a real-world
            scenario" suggestion.
+- [x] 1.11 `scripts/seedLobby.ts`
+- [x] 1.12 `scripts/wipeDb.ts` — hard reset: deletes all documents from User, Wallet,
+           WalletTransaction, BankAccount, BankTransaction, GatewayTransaction, Poker,
+           PokerMode, PokerDesk, PokerGameArchive, PracticeSession, Admin. AppConfig
+           preserved. Prints deleted count per collection. Prints next-step instructions
+           (createAdmin.ts → seedLobby.ts).
+- [x] 1.13 Update `scripts/seedLobby.ts` — add a practice desk after the two cash desks:
+           a new PokerMode (`mode: 'practice'`, `stake: 10000`, same INR/blinds fields)
+           and one PokerDesk (`isPractice: true`, `minToStart: 3`, `maxSeats: 6`,
+           `tableName: 'Practice Table 1'`). Print the practice desk ID so the
+           frontend dev can paste it into the socket `practice` event.
+- [x] 1.14 `scripts/wipeGameData.ts` — partial wipe: deletes Poker, PokerMode, PokerDesk,
+           PokerGameArchive, PracticeSession only. Users, wallets, admin, AppConfig preserved.
+           Use this to reseed lobby without touching accounts.
+- [x] 1.15 `scripts/seedPracticeDesks.ts` — creates 1 Poker (upsert) + 1 PokerMode
+           (mode: 'practice') + 20 PokerDesks (isPractice: true, 6 seats, minToStart: 3).
+           Idempotent via PokerMode.description marker. Prints all 20 deskIds.
 
 ---
 
@@ -204,7 +221,7 @@ Order = dependency order. Each route reviewed before the next.
 
 ## PHASE 5 — Socket / Live Engine
 
-- [ ] 5.1  `src/server.ts` — rebuild as a THIN socket transport: receive event → call gameService → emit.
+- [x] 5.1  `src/server.ts` — rebuild as a THIN socket transport: receive event → call gameService → emit.
            No game logic in the server; it calls services/gameService (0.8b), which calls the engine.
            C→S events: `join` `{ deskId, seatNumber, buyInAmount }` (calls addUserToSeat), `action`, `leave`.
            S→C room broadcasts use redacted state (holeCards stripped). `game:start` additionally emits
@@ -213,15 +230,13 @@ Order = dependency order. Each route reviewed before the next.
            **Convention reminder:** `handlePlayerAction` and `userLeavesSeat` both return
            `{ desk, needsShowdown }`. When `needsShowdown` is true, the socket handler MUST follow up
            with `showdown({ deskId })` to finalize the hand. Otherwise the hand sits in limbo.
-- [ ] 5.2  Turn loop + 60s auto-fold timer + 3-skip disconnect (orchestrated via gameService)
-- [ ] 5.3  Bot action driver for practice mode (per difficulty) — feeds actions into the same gameService path
-- [ ] 5.4  Reconnection + seat-status handling
-- [ ] 5.5  Verify a full hand plays through to showdown + archives correctly (username fix proven)
-- [ ] 5.6  **Tier-2 smoke test.** HTTP/socket client drives a real hand end-to-end through the actual
-           routes: Google sign-in (mock or test token) → query lobby → sit at desk → place bets via
-           socket events → verify broadcasts → archive lands. Postman/Insomnia or a small Node script
-           against the running backend. NOT a full test suite (no Vitest yet). Goal: prove auth + routes
-           + sockets + service + engine all work together before mobile app integration.
+- [x] 5.2  Turn loop + 60s auto-fold timer + 3-skip disconnect (orchestrated via gameService)
+- [x] 5.3a Practice mode foundation
+- [x] 5.3b Bot layer + matchmaking
+- [x] 5.3c Practice sessions admin endpoint
+- [x] 5.4  Reconnection + seat-status handling
+- [x] 5.5  Verify a full hand plays through to showdown + archives correctly (username fix proven)
+- [x] 5.6  **Tier-2 smoke test** (`scripts/tier2Smoke.ts`)
 
 ---
 
@@ -268,7 +283,10 @@ mobile-app-to-backend pass — the final pre-launch gate.
 
 - [ ] Blind/stake semantics documented in lobby (settled: SB=stake, BB=2×stake, ante=stake)
 - [ ] `walletTransaction` collection name after model rename — confirm `wallettransactions`
-- [ ] Bot identity representation at runtime (synthetic in-memory ids — no DB)
+- [x] Bot identity representation at runtime — DECIDED: synthetic `Types.ObjectId` generated
+      in-process by `botService.addBotToSeat`; no DB user record, no wallet. Practice desks
+      flag via `isPractice`; `addBotToSeat` sets `balanceAtTable = PRACTICE_STARTING_CHIPS`
+      directly via atomic `$push`. See LOGS.md 2026-06-07.
 - [ ] Deployment topology for next(3000) + socket(3001) — revisit before going live
 - [ ] **Commission on leave** (Phase 3/4) — per-session percentage on NET PROFIT only, deducted in
       `userLeavesSeat`. Player buys 100, leaves with 162 → commission on the 62 profit. Buys 100,

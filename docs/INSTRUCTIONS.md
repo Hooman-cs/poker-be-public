@@ -105,92 +105,55 @@ Do not ask whether to write — always do it.
 <!-- Claude Desktop updates this section before each task. -->
 <!-- Clear this section when a phase is complete. -->
 
-**Phase 5, Task 5.1 — `src/server.ts` + `src/types/socketTypes.ts`**
+**Phase 6, Task 6.1 — Admin shared components: Sidebar, Header, SearchInput**
+
+### Context
+Phase 6 is the admin frontend. All backend admin API routes (Phase 4) are complete.
+shadcn/ui and Tailwind are available. lucide-react is already in dependencies.
+Design aesthetic: dark sidebar (slate-900), clean white/light content area, calm and readable.
+Target look: Claude.ai interface — not flashy, just calm + professional.
 
 ### Files to read first
-- `docs/ARCHITECTURE.md` — full Phase 5 socket design section (events, DeskRuntimeState shape, edge-case catalog, bot subsystem design)
-- `docs/LOGS.md` — grep `[INVARIANT]` entries for Phase 5
-- `docs/CONTRACTS.md` — all gameService entries: `addUserToSeat`, `userLeavesSeat`, `handlePlayerAction`, `showdown`, `advanceGameRound`, `createGame`
-- `src/utils/jwt.ts` — verify signature (used for socket auth middleware)
-- `src/lib/api/errors.ts` — ServiceError subclass names (for mapping thrown errors to `error` event codes)
+- `docs/ARCHITECTURE.md` — "Admin panel scope & screens" and "Conventions" sections
+- `src/app/layout.tsx` — understand existing root layout
+- `tailwind.config.ts` — confirm theme tokens before using custom colors
 
 ### Files to create
-- `src/types/socketTypes.ts` — socket event payload types (NEW)
-- `src/server.ts` — standalone Socket.io server (NEW)
+- `src/components/admin/Sidebar.tsx`
+- `src/components/admin/Header.tsx`
+- `src/components/admin/SearchInput.tsx`
 
-### Implementation logic
+### Sidebar.tsx — 'use client'
+Dark sidebar: `bg-slate-900 text-white`, `w-64`, `min-h-screen`, fixed left.
+Top: app name "Poker Admin" in bold white text.
+Nav items — use Next.js `Link` + `usePathname` for active state detection:
+  - Overview → /admin/overview (icon: LayoutDashboard)
+  - Statistics → /admin/statistics (icon: BarChart2)
+  - Users → /admin/users (icon: Users)
+  - Transactions → /admin/transactions (icon: ArrowLeftRight)
+  - PG Transactions → /admin/pgTransactions (icon: CreditCard)
+  - Poker → /admin/poker (icon: Layers)
+  - Game List → /admin/gameList (icon: List)
+Active link: `bg-white/10 rounded-md`. Hover: `hover:bg-slate-800`.
+All icons from `lucide-react` at size 18.
 
-**`src/types/socketTypes.ts`**
-Define payload interfaces for every event in the protocol table:
-- C→S: `JoinPayload`, `ActionPayload`, `LeavePayload`
-- S→C: `PlayerJoinedPayload`, `PlayerLeftPayload`, `GameStartPayload`, `GameActionPayload`, `GameRoundAdvancePayload`, `GameShowdownPayload`, `DeskClosedPayload`, `TurnStartPayload`, `ErrorPayload`
-- `HoleCardsPayload` — targeted after `game:start`: `{ holeCards: ICard[] }`
-- `RedactedGamePlayer` — player shape with `holeCards: []` always
+### Header.tsx — server component (no hooks)
+Props: `{ title: string; subtitle?: string }`
+Clean bar: `bg-white border-b px-6 py-4`.
+Title: `text-xl font-semibold text-gray-900`. Subtitle (optional): `text-sm text-gray-500`.
 
-**`src/server.ts`**
-
-1. **Setup**: standalone HTTP + Socket.io server on `process.env.SOCKET_PORT ?? 3001`. Import `gameService` functions directly. Import `verifyToken` from `@/utils/jwt`.
-
-2. **Auth middleware** (`io.use`): read JWT from `socket.handshake.auth.token`. Verify via `verifyToken`. Reject with `MISSING_AUTH` / `INVALID_TOKEN` if absent or invalid. Attach `socket.data.userId` and `socket.data.role` from the decoded payload.
-
-3. **`DeskRuntimeState` + `deskRuntime` map**: define the full interface (userSockets, botSeats, skipCounts, turnTimer, autoStartTimer). `const deskRuntime = new Map<string, DeskRuntimeState>()`.
-
-4. **Helper — `getOrCreateRuntime(deskId)`**: returns existing runtime or creates a fresh one with empty maps and null timers.
-
-5. **Helper — `broadcastDeskState(deskId, event, desk, extraPayload?)`**: strips `holeCards` from all players in `desk.currentGame?.players` before emitting to the room. Merges `extraPayload` into the broadcast if provided.
-
-6. **Helper — `targetedEmit(deskId, userId, event, payload)`**: resolves socketId via `runtime.userSockets.get(userId)`, emits only to that socket.
-
-7. **Helper — `scheduleAutoStart(deskId, delayMs = 3000)`**: clears existing `autoStartTimer`, sets a new 3s `setTimeout` that calls `createGame({ deskId })`. On success: emits `game:start` (redacted broadcast + targeted hole cards). On `InvalidStateError` (desk closed, already in progress): emits `desk:closed` if the error indicates closure, otherwise discards silently.
-
-8. **Helper — `handleNeedsShowdown(deskId)`**: calls `showdown({ deskId })`. On success: emits `game:showdown` to room with `potResults`. Then schedules auto-start if `desk.status !== 'closed'`.
-
-9. **Helper — `handleAllInRunout(deskId)`**: if after any action `activePlayers === 0 && allInPlayers >= 2`, loop `advanceGameRound` until `progression === 'showdown'`, then call `handleNeedsShowdown`.
-
-10. **`join` handler** (`socket.on('join', async (payload) => { ... })`):
-    - Validate `deskId`, `seatNumber`, `buyInAmount` present
-    - Call `addUserToSeat({ deskId, userId, seatNumber, buyInAmount })`
-    - `socket.join(deskId)`
-    - `runtime.userSockets.set(userId, socket.id)`
-    - `broadcastDeskState(deskId, 'player:joined', updatedDesk)`
-    - Check auto-start threshold: if `desk.seats.length >= desk.minToStart` (cold) or `>= WARM_GAME_MIN_PLAYERS` (warm), call `scheduleAutoStart(deskId)`
-    - On error: `targetedEmit` the `error` event with the ServiceError code
-
-11. **`action` handler** (`socket.on('action', async (payload) => { ... })`):
-    - Validate `deskId`, `action`, optional `amount`
-    - Call `handlePlayerAction({ deskId, userId, action, amount })`
-    - If `needsShowdown`: call `handleNeedsShowdown(deskId)`; return
-    - If `progression === 'nextRound'`: emit `game:roundAdvance` (redacted broadcast)
-    - Else: emit `game:action` (redacted broadcast)
-    - After action, check all-in runout condition and call `handleAllInRunout` if met
-    - Emit targeted `turn:start` to the new `currentTurnPlayer`
-    - On error: `targetedEmit` the `error` event
-
-12. **`leave` handler** (`socket.on('leave', async (payload) => { ... })`):
-    - Call `userLeavesSeat({ deskId, userId })`
-    - `socket.leave(deskId)`
-    - `runtime.userSockets.delete(userId)`
-    - If `needsShowdown`: call `handleNeedsShowdown(deskId)`; return
-    - `broadcastDeskState(deskId, 'player:left', updatedDesk)`
-    - If `updatedDesk.status === 'closed'`: emit `desk:closed`; clean up `deskRuntime` entry
-    - On error: `targetedEmit` the `error` event
-
-13. **`disconnect` handler**: remove from `userSockets` for any desks the socket was registered in. Do NOT call `userLeavesSeat` (3-skip handles eviction in 5.2).
-
-### Resolved decisions (do not re-derive)
-- Seating is socket-only via `join` event — no REST endpoint exists
-- Broadcasts are redacted (holeCards stripped); targeted hole-card emit follows `game:start`
-- `error` is a targeted S→C event `{ code: string, message: string }`
-- `DeskRuntimeState.userSockets` is the sole userId→socketId map; keep it updated on join, leave, disconnect
-- `turnTimer` and `skipCounts` fields exist in the struct but are unused until task 5.2 — initialize to `null` / empty Map
+### SearchInput.tsx — 'use client'
+Props: `{ value: string; onChange: (val: string) => void; placeholder?: string }`
+Relative wrapper `div`. `Search` icon from lucide-react, absolute-positioned left-inside.
+Input: `pl-9 pr-4 py-2`, `border border-gray-300 rounded-md`, focus ring, `w-full`.
 
 ### Constraints
-- NO game logic in server.ts — every decision is a gameService call
-- NO `withDeskLock` calls from server.ts — the service functions already acquire the lock internally
-- NO relative imports — `@/` alias only
-- `server.ts` is NOT a Next.js route — it is a standalone Node process; use `http.createServer` + `new Server(httpServer)`
-- Do NOT touch any Level 1 or Level 2 files
-- `src/hooks/useSocket.ts` is NOT modified — client-side hook, deferred to Phase 6
+- 'use client' on Sidebar (uses `usePathname`) and SearchInput. Header: server component.
+- `@/` imports only. PascalCase filenames. No barrel `index.ts`.
+- Pure presentational — no API calls, no business logic.
+- lucide-react is already installed — do NOT modify package.json.
+- shadcn/ui components (Button, Input) may be used ONLY if already present under
+  `src/components/ui/`. If not present, use plain Tailwind HTML elements.
 
 ---
 

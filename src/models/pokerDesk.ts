@@ -150,6 +150,8 @@ export interface IPokerDesk {
   firstGameStartedAt: Date | null;
   /** Cumulative all-time buy-ins counter, minor units (not decremented on leave). */
   totalBuyIns: number;
+  /** True for practice desks — no wallet debits/credits, fixed starting stack. */
+  isPractice: boolean;
 }
 
 /**
@@ -317,6 +319,10 @@ const PokerDeskSchema = new Schema<IPokerDeskDocument>(
       enum: ['cash', 'practice'],
       default: 'cash',
       required: true,
+    },
+    isPractice: {
+      type: Boolean,
+      default: false,
     },
     currency: {
       type: String,

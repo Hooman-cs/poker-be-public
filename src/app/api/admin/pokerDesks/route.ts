@@ -112,6 +112,8 @@ export async function POST(req: NextRequest) {
       throw new AuthError('INVALID_STATE', 'minToContinue must be <= minToStart');
     }
 
+    const isPractice = body.isPractice === true; // default false if absent
+
     await dbConnect();
 
     const pokerMode = await PokerMode.findById(body.pokerModeId).lean<LeanPokerMode>();
@@ -135,6 +137,7 @@ export async function POST(req: NextRequest) {
       minToContinue,
       maxPlayerCount,
       maxSeats: maxPlayerCount, // mirrors maxPlayerCount on creation
+      isPractice,
     });
 
     return successResponse(

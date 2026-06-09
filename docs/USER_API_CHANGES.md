@@ -129,6 +129,14 @@ banners or locale switches.
 - Inbound money (deposit amounts, etc.) is still integer minor units sent as
   JSON `number`. Do NOT format these before sending.
 - Add the new `GET /api/user/games/history` endpoint call.
+- **`GET /api/lobby/games` response shape change:** the top-level data key is now
+  `games` (not `pokerData` or any other prior key). Full shape:
+  ```
+  { message, games: [{ pokerGameId, gameType, description, modes: [{ modeId,
+  modeType, stake, bigBlind, minBuyIn, maxBuyIn, currency, desks: [{ deskId,
+  tableName, playerCount, maxPlayers, gameStatus, totalPot }] }] }] }
+  ```
+  Access via `response.games`, not `response.pokerData` / `response.data`.
 
 ## Backend dependencies (parking lot)
 - GOOGLE_CLIENT_ID env var (from a Google Cloud OAuth client configured for the apps).

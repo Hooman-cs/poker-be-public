@@ -21,6 +21,136 @@ it was built that way, LOGS.md is.
 
 ---
 
+## 2026-06-09 — TASKS 1.12 + 1.13 — wipeDb.ts + seedLobby.ts practice desk — PASS
+
+Created `scripts/wipeDb.ts`: calls `.deleteMany({})` on all 12 operational collections (User, Wallet, WalletTransaction, BankAccount, BankTransaction, GatewayTransaction, Poker, PokerMode, PokerDesk, PokerGameArchive, PracticeSession, Admin), prints deleted count per collection, prints next-step instructions. AppConfig intentionally excluded so admin-configurable rates survive a wipe. Updated `scripts/seedLobby.ts`: added a third PokerMode (`mode: 'practice'`, `stake: 10000`) and a PokerDesk (`isPractice: true`, `tableName: 'Practice Table 1'`, `minToStart: 3`, `maxSeats: 6`) after the two existing cash desks. TypeScript compiled cleanly.
+
+---
+
+## 2026-06-09 — TASK 5.6-patch — tier2Smoke.ts hole-card race + leaveViaSocket observer — PASS
+
+Fixed two test-script bugs in `scripts/tier2Smoke.ts` (not server bugs). Bug A: sequential `socket.once` calls missed targeted `game:start` events already in flight — patched with `waitForHoleCards` helper using `socket.on` with payload-shape discrimination (`data.holeCards` present), pre-registered synchronously before any `await`. Bug B: `leaveViaSocket` awaited `player:left` on the leaver's own socket, which never receives it (server calls `socket.leave(deskId)` before the broadcast) — patched with `observerSocket` parameter; both between-hand call sites pass the first active non-leaver socket. Final run: all checks passed (HTTP, socket auth rejection, 5-hand lifecycle, hole-card delivery, money conservation, archive correctness). Phase 5 carry-forward items now fully closed.
+
+---
+
+Created idempotent seed script. Idempotency keyed on `Poker.description = "Lobby Seed — Texas Hold'em"` (not `gameType`, which has a unique index). Created one Poker + two PokerModes (Low Stakes stake=10000, High Stakes stake=50000) + one PokerDesk per mode. Second run confirmed idempotent. Two schema discoveries: `Poker` and `PokerMode` have no `name` field; PokerMode uses `description` for labels. `minToStart`/`minToContinue` schema floor is 3 (not 2 as originally spec'd in the task).
+
+Frontend issue found during integration: `GET /api/lobby/games` returns `{ message, games: [...] }` but the user frontend was reading `response.pokerData` (old API key). Fix is frontend-only — change to `response.games`. Response shape documented in `docs/USER_API_CHANGES.md`.
+
+---
+
+## 2026-06-07 — TASKS 1.14 + 1.15 — wipeGameData.ts + seedPracticeDesks.ts — DONE
+
+Created `scripts/wipeGameData.ts`: partial wipe deleting Poker, PokerMode, PokerDesk, PokerGameArchive, PracticeSession only. Users, wallets, admin accounts, and AppConfig are preserved. Prints deleted count per collection and next-step instructions. Use this instead of `wipeDb.ts` when iterating on lobby/game data without disturbing user accounts.
+
+Created `scripts/seedPracticeDesks.ts`: creates 20 practice desks under one PokerMode (mode: 'practice', stake: ₹100 SB). Idempotent via `PokerMode.description = 'practice-seed-v1'` marker. Upserts the Poker row to avoid unique-index collision with smoke test artifacts. All desks have `isPractice: true`, `minToStart: 3`, `maxSeats: 6`. Prints all 20 deskIds on completion for use in socket `practice` event during frontend testing.
+
+---
+
+## 2026-06-07 — PHASE 5 COMPLETE
+
+All Phase 5 tasks done: socket server (5.1), turn timer + 3-skip (5.2), practice mode foundation including Level 1+2 unlocks (5.3a), bot layer + matchmaking + session tracking (5.3b), practice sessions admin endpoint (5.3c), reconnection + seat-status (5.4), Tier-1 smoke test verification (5.5), Tier-2 smoke test (5.6).
+
+Tier-2 smoke test (tier2Smoke.ts) first run: HTTP endpoint checks passed, socket auth rejection passed, all 5 hand lifecycle phases executed. Two test-script bugs found during verification (not server bugs): (1) hole-card verification race — sequential `socket.once` misses events already fired; patched with `waitForHoleCards` helper using payload-shape discrimination. (2) `leaveViaSocket` waited on leaver’s socket which never receives `player:left`; patched with `observerSocket` parameter. Patch run pending at phase close — carry into Phase 6 start.
+
+Utility tasks 1.12 (`wipeDb.ts`) and 1.13 (seedLobby practice desk) also pending one Claude Code run — carry into Phase 6 start.
+
+---
+
+## 2026-06-07 — TASK 5.6 — scripts/tier2Smoke.ts — PASS (patch pending final run)
+
+Created `scripts/tier2Smoke.ts` — full lifecycle Tier-2 smoke test driving the actual HTTP + socket stack. Script seeds 6 users, mints JWTs directly via `signToken`, verifies `GET /api/lobby/games` and `GET /api/lobby/desks/best` return 200 with data, verifies bad-token rejection (`connect_error: INVALID_TOKEN`), then drives the same 5-phase lifecycle as `playLifecycle.ts` entirely through socket events: `join` → `action` (turn:start-driven) → `leave` → `game:showdown`, including mid-hand leave, force-close, and Hand-6 rejection. Verifies redacted broadcast shape (holeCards: []) on every `game:start` room broadcast, verifies targeted hole-card delivery per player, and checks archive username population + money conservation. TypeScript compiled cleanly.
+
+First run: HTTP checks, socket auth rejection, and all 5 hand phases completed. Two test-script bugs found and patched: (1) hole-card verification race — sequential `socket.once` calls missed targeted `game:start` events that fired before the listener was registered; patched with `waitForHoleCards` helper (uses `socket.on` + payload-shape check on `data.holeCards`), pre-registered synchronously before any `await` across all 5 hands. (2) `leaveViaSocket` waited on the leaver’s own socket, which never receives `player:left` (server calls `socket.leave(deskId)` before the broadcast); patched by adding `observerSocket` parameter to `leaveViaSocket` and updating both between-hand call sites. Final patched run pending — carry into Phase 6 start.
+
+---
+
+## 2026-06-07 — PROCESS — Standing rule: TASKS.md + LOGS.md update on every task change
+
+Standing rule confirmed: TASKS.md and LOGS.md must both be updated whenever a task is added, modified, removed, or split — at the same time the change is made, not after. No exceptions for utility scripts, patches, or sub-tasks. `scripts/seedLobby.ts` (task 1.11) was retroactively added to TASKS.md; it was omitted when the prompt was written.
+
+---
+
+## 2026-06-07 — TASK 5.5 — Tier-1 smoke test verification pass — PASS
+
+All three smoke tests passed cleanly against the post-5.4 codebase: `playOneHand.ts`, `playThreeHands.ts`, `playLifecycle.ts`. No regressions from any Phase 5 work. Service layer + engine verified end-to-end.
+
+---
+
+## 2026-06-07 — TASK 5.4 — Reconnection + seat-status handling — PASS
+
+Extended `disconnect` handler (now async) to fire-and-forget a `PokerDesk.findOneAndUpdate` setting `seats.$.status = 'disconnected'` for the affected desk+userId. Added reconnect path at the top of the `join` handler: if user is already seated, skips `addUserToSeat`, re-joins socket room, updates `userSockets`, resets seat status to `'active'` via `findOneAndUpdate`, reloads desk, broadcasts `player:joined`, re-emits hole cards targeted if game in progress, and restarts turn timer only if it's the reconnecting player's turn and no timer is currently running. Returns early before any normal join flow. TypeScript compiled cleanly.
+
+---
+
+## 2026-06-07 — TASK 5.3c — Practice sessions admin endpoint + isPractice desk creation — PASS
+
+Created `GET /api/admin/practiceSessions` (paginated, admin-only; populates `userId` with `username + email`; `finalChips` serialized via `serializeMoney`, null if session still open). Added `isPractice = body.isPractice === true` to `POST /api/admin/pokerDesks` POST handler — defaults `false` if absent, no other handler changes. TypeScript compiled cleanly.
+
+Note: `serializeDesk` in `pokerDesks/route.ts` does not currently expose `isPractice` in GET responses. If the admin UI needs to display or filter by practice flag, `serializeDesk` needs an additive update (Level 4, safe to do when admin UI is built in Phase 6).
+
+---
+
+## 2026-06-07 — TASK 5.3b — Bot layer + practice session tracking — PASS
+
+Created `src/services/botService.ts` (`addBotToSeat`: synthetic ObjectId, no DB user, no wallet, acquires desk lock internally) and `src/lib/bots/index.ts` (three strategy implementations: Easy — check/call/fold, never raises; Medium — pot-odds-aware, raises at 0.75× pot on a pair; Hard — position-aware, tight early threshold 0.25, loose late threshold 0.35, full-pot raise with pair in late position). Extended `DeskRuntimeState` with `practiceSessions: Map<userId, sessionId>`. Added `closePracticeSession` helper called from `leave` handler and 3-skip eviction path to record `endedAt` and `finalChips`. Added `practice` socket event: seats human via `addUserToSeat`, auto-assigns bot seat numbers, calls `addBotToSeat` per bot, opens `PracticeSession` record. Modified `startTurnTimer` to route bot turns through a 1.5s delayed `handlePlayerAction` (reads full desk from DB for strategy input) instead of the 60s human timer. Cleanup from 5.3a deferred items also completed: ~1100 lines of commented-out dead code removed from `gameService.ts`, ~133 lines from `pokerMode.ts`, `PRACTICE_STARTING_STACK_MINOR` deleted from `constants.ts`. All Tier-1 smoke tests passed after cleanup and after full implementation.
+
+Decision: practice history endpoint (originally `GET /api/user/games/practice-history`) changed to admin-only (`GET /api/admin/practiceSessions`). User-facing practice history deferred to future v2.
+
+---
+
+## 2026-06-07 — TASK 5.3a — Practice mode foundation — PASS
+
+Added `isPractice: Boolean` to `PokerDesk` schema and `PRACTICE_STARTING_CHIPS = 100000` to `constants.ts`. Practice branches added to `addUserToSeat` (gated on `!desk.isPractice`: skips wallet check and deduction, always sets `balanceAtTable = PRACTICE_STARTING_CHIPS`) and `userLeavesSeat` (skips wallet refund on practice desks, returns `finalChips: number | null` — non-null for practice, null for cash). New `PracticeSession` model created with compound index `{ userId: 1, startedAt: -1 }`. All three Tier-1 smoke tests passed. TypeScript compiled cleanly.
+
+Two cleanup items deferred to 5.3b: (1) `PRACTICE_STARTING_STACK_MINOR` already existed in `constants.ts` before this task — Claude Code added `PRACTICE_STARTING_CHIPS = 100000` alongside it as a duplicate (both equal 100000). `PRACTICE_STARTING_STACK_MINOR` should be removed and all references updated to `PRACTICE_STARTING_CHIPS`. (2) ~600 lines of commented-out old `gameService.ts` code remain at the bottom of the file — inert but should be deleted.
+
+[INVARIANT] `desk.isPractice` is the ONLY permitted gate for practice-mode branching in `gameService.ts`. Never check `isCashMode(desk.mode)` for the seat/wallet branching in `addUserToSeat` or `userLeavesSeat` — those functions now use `!desk.isPractice` exclusively.
+
+---
+
+## 2026-06-07 — DECISION — Level 1+2 unlock for practice mode (task 5.3a)
+
+Practice mode requires genuine changes to frozen files with documented justification. Changes approved:
+
+**Level 1 — `src/models/pokerDesk.ts`:** Add `isPractice: { type: Boolean, default: false }` field. Justification: practice desks need to be distinguishable from cash desks at the DB level so that `addUserToSeat`, `userLeavesSeat`, and the socket server can all branch correctly without passing flags at call sites. A runtime-only flag would require threading an extra parameter through every gameService call.
+
+**Level 1 — `src/config/constants.ts`:** Add `PRACTICE_STARTING_CHIPS = 100000` (in minor units = ₹1000.00). Justification: a single source of truth for the practice buy-in used by `addUserToSeat` and any future practice-related UI. One line addition.
+
+**Level 2 — `src/services/gameService.ts`:** Two function modifications:
+- `addUserToSeat`: if `desk.isPractice`, skip wallet balance check and wallet deduction; set `seat.balanceAtTable = PRACTICE_STARTING_CHIPS` directly.
+- `userLeavesSeat`: if `desk.isPractice`, skip wallet refund; include `finalChips: seat.balanceAtTable` in the return value alongside the existing fields.
+
+No changes to engine files. No changes to pot/showdown logic. Existing cash-mode paths are entirely unaffected — the `isPractice` branch is additive only.
+
+[INVARIANT] `isPractice` is the sole gate for all practice-mode branching. Never check `isCashMode` or any other derived flag — `desk.isPractice` is the canonical field.
+
+[INVARIANT] `PRACTICE_STARTING_CHIPS` from `src/config/constants.ts` is the only permitted source of the practice buy-in amount. Never hardcode 100000 or 1000 inline.
+
+[INVARIANT] `userLeavesSeat` on a practice desk MUST return `finalChips` in its result object. The socket server uses this to close the `PracticeSession` record. If `finalChips` is missing, sessions will never be closed.
+
+[INVARIANT] Tier-1 smoke tests (`scripts/playOneHand.ts`, `scripts/playThreeHands.ts`, `scripts/playLifecycle.ts`) MUST all pass after 5.3a before any further Phase 5 work begins.
+
+---
+
+## 2026-06-07 — TASK 5.2 — Turn timer + 3-skip eviction (src/server.ts) — PASS
+
+Added `startTurnTimer(deskId, userId)` helper to `server.ts`. Emits targeted `turn:start { deadline }` then sets a 60s `setTimeout`. On expiry: skip counter incremented BEFORE the fold call (so the eviction check at >= 3 sees the updated count), `handlePlayerAction({ action: 'fold' })` called, `turn:timeout` room broadcast emitted. Two paths: eviction (skip >= 3 → `userLeavesSeat`, same closure/showdown handling as the `leave` handler) and normal (fold result broadcast, next player timer started). `InvalidStateError` from a racing timer is silently discarded. `turnTimerUserId` field added to `DeskRuntimeState` to enable conditional timer clearing in the `leave` handler. Added `PokerDesk.findById` read on failed action to restart timer for the correct player.
+
+Bug found in verification: two paths were missing a `startTurnTimer` call after `player:left` — (1) voluntary `leave` when leaver held the turn timer, (2) 3-skip eviction path. Fixed in a patch pass. Guard used: `if (nextTurn && rt && !rt.turnTimer)` ensures timer is only started when cleared (leaver was current turn player), not restarted when another player's timer is already running.
+
+[INVARIANT] After ANY `player:left` broadcast — voluntary leave or 3-skip eviction — the server MUST check `currentGame?.currentTurnPlayer` and call `startTurnTimer` if no timer is currently running. Failing to do this stalls the game silently.
+
+---
+
+## 2026-06-07 — TASK 5.1 — src/server.ts + src/types/socketTypes.ts — PASS
+
+Created standalone Socket.io server on port 3001 and socket event payload types. Auth middleware reads JWT from `socket.handshake.auth.token`, attaches `userId`/`role` to `socket.data`. Six helpers implemented: `redactDesk` (strips holeCards via `.toObject()` before any room emit), `broadcastDeskState`, `targetedEmit`, `getOrCreateRuntime`, `scheduleAutoStart`, `handleNeedsShowdown`, `handleAllInRunout`. All three C→S events (`join`, `action`, `leave`) call the appropriate gameService function and handle `needsShowdown` and all-in runout. Auto-start threshold correctly uses `desk.minToContinue` for warm desks and `desk.minToStart` for cold. `disconnect` removes from `userSockets` only — no `userLeavesSeat` call. TypeScript compiled cleanly.
+
+One design note for Phase 7: the targeted hole-card emit after `game:start` reuses the `game:start` event name with payload `{ holeCards }` rather than a distinct event. The mobile app receives `game:start` twice — once with `{ desk }` (room broadcast) and once with `{ holeCards }` (targeted). Client must distinguish by payload shape. Worth flagging in USER_API_CHANGES.md before Phase 7.
+
+---
+
 ## 2026-06-07 — DECISION — Phase 5 socket protocol gaps resolved
 
 Three gaps in the Phase 2 socket design were identified and resolved before task 5.1 begins.

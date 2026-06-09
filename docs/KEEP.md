@@ -138,6 +138,12 @@ for additive changes; do log signature changes.
 | `src/middleware.ts` | Cheap auth gate for `/admin/**` and `/auth/login`. Cookie-based JWT verify with `jose` (Edge runtime). |
 | `src/utils/helpers.ts` | Keeps `generateGamerName`. |
 | `src/config/dbConnect.ts` | DB connection with global caching; imported everywhere. |
+| `src/server.ts` | Level 4 (standalone Socket.io server; thin transport layer; no game logic inline) |
+| `src/types/socketTypes.ts` | Level 4 (socket event payload type definitions; shared between server and future client hook) |
+| `src/models/practiceSession.ts` | Level 3 (Mongoose model; additive schema changes OK; never delete `finalChips` — server.ts reads it to close sessions) |
+| `src/services/botService.ts` | Level 4 (bot seating only; acquires desk lock internally — never call from inside `withDeskLock`) |
+| `src/lib/bots/index.ts` | Level 4 (strategy implementations are intentionally swappable; `getBotStrategy` is the only public entry point) |
+| `src/app/api/admin/practiceSessions/route.ts` | Level 4 (admin route; additive changes OK) |
 
 ---
 
@@ -157,6 +163,8 @@ that's a non-concern.
 | `scripts/playOneHand.ts` | Tier-1 smoke test. Seeds + plays a 3-player Hold'em hand + verifies 9 invariants. Run before any future change to Level 2 files. |
 | `scripts/playThreeHands.ts` | Tier-1 multi-hand smoke test. 3 hands on the same desk, verifies button rotation across hands. 14/14 checks. |
 | `scripts/playLifecycle.ts` | Tier-1 lifecycle smoke test. 5 hands at varying player counts (4→6→5→4→3→force-close→reject). Verifies cold-start gate, warm play, mid-hand leave, force-closure, money conservation across the full lifecycle. |
+| `scripts/wipeDb.ts` | Hard-reset script. Deletes all documents from 12 operational collections; preserves AppConfig. Prints deleted counts and next-step instructions. Run by hand before a fresh seed. |
+| `scripts/tier2Smoke.ts` | Tier-2 smoke test. Full HTTP + Socket.io lifecycle (5 hands, mid-hand leave, force-close, Hand-6 reject). Seeds 6 users, drives game via socket events, verifies redacted broadcasts, targeted hole-card delivery, money conservation. Requires `npm run dev` on ports 3000 + 3001. |
 
 ---
 
