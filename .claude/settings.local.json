@@ -8,7 +8,8 @@
       "Bash(Select-Object -First 40)",
       "Bash(Select-String \"required:\" src/models/wallet.ts)",
       "Bash(Select-String \"instantBonus|lockedBonus\" src/models/wallet.ts)",
-      "Bash(mkdir -p \"p:/poker/src/app/api/user/wallet\")"
+      "Bash(mkdir -p \"p:/poker/src/app/api/user/wallet\")",
+      "Bash(npx tsc *)"
     ],
     "additionalDirectories": [
       "p:\\poker",

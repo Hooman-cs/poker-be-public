@@ -309,6 +309,26 @@ async function handleNeedsShowdown(deskId: string): Promise<void> {
     io.to(deskId).emit('desk:closed', {});
     deskRuntime.delete(deskId);
   } else {
+    if (runtime && runtime.botSeats.size > 0) {
+      const botObjIds = [...runtime.botSeats.keys()].map(
+        (id) => new Types.ObjectId(id),
+      );
+      const updatedDesk = await PokerDesk.findByIdAndUpdate(
+        deskId,
+        { $pull: { seats: { userId: { $in: botObjIds } } } },
+        { new: true },
+      );
+      runtime.botSeats.clear();
+      if (updatedDesk && updatedDesk.seats.length < updatedDesk.minToContinue) {
+        updatedDesk.status = 'closed' as typeof updatedDesk.status;
+        await updatedDesk.save();
+        broadcastDeskState(deskId, 'player:left', updatedDesk);
+        io.to(deskId).emit('desk:closed', {});
+        deskRuntime.delete(deskId);
+        return;
+      }
+      if (updatedDesk) broadcastDeskState(deskId, 'player:left', updatedDesk);
+    }
     scheduleAutoStart(deskId);
   }
 }
@@ -333,8 +353,33 @@ function scheduleAutoStart(deskId: string, delayMs = 3000): void {
   runtime.autoStartTimer = setTimeout(async () => {
     runtime.autoStartTimer = null;
     try {
-      const desk = await createGame({ deskId });
+      // Remove any broke bot seats before starting the next hand so createGame
+      // doesn't throw when an all-in bot tries to post a blind with 0 balance.
+      const freshDesk = await PokerDesk.findById(deskId).lean();
+      if (!freshDesk) return;
+
+      for (const seat of freshDesk.seats) {
+        const uid = seat.userId.toString();
+        if (seat.balanceAtTable === 0 && runtime.botSeats.has(uid)) {
+          try {
+            const { desk: updated, needsShowdown } = await userLeavesSeat({ deskId, userId: uid });
+            runtime.botSeats.delete(uid);
+            if (needsShowdown) { await handleNeedsShowdown(deskId); return; }
+            broadcastDeskState(deskId, 'player:left', updated);
+            const nextTurn = updated.currentGame?.currentTurnPlayer;
+            const rt = deskRuntime.get(deskId);
+            if (nextTurn && rt && !rt.turnTimer) startTurnTimer(deskId, nextTurn.toString());
+            if (updated.status === 'closed') {
+              io.to(deskId).emit('desk:closed', {});
+              deskRuntime.delete(deskId);
+              return;
+            }
+          } catch { /* seat already removed between check and eviction */ }
+        }
+      }
+
       // Redacted broadcast first, then targeted hole cards to each player.
+      const desk = await createGame({ deskId });
       broadcastDeskState(deskId, 'game:start', desk);
       const game = desk.currentGame;
       if (game) {
@@ -349,14 +394,23 @@ function scheduleAutoStart(deskId: string, delayMs = 3000): void {
       }
     } catch (err) {
       if (err instanceof InvalidStateError) {
-        // Desk was closed between the timer being set and firing.
+        // Desk closed between timer set and firing, game already in progress,
+        // or not enough players — all expected; discard silently.
         if (err.message.includes('closed')) {
           io.to(deskId).emit('desk:closed', {});
           deskRuntime.delete(deskId);
         }
-        // Game already in progress or not enough players — discard silently.
+        return;
       }
-      // Any other error is also discarded to prevent crashing the server process.
+      // Unexpected error: log, close the desk gracefully, clean up runtime.
+      process.stderr.write(
+        `[scheduleAutoStart] unexpected error for desk ${deskId}: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`
+      );
+      const rt = deskRuntime.get(deskId);
+      if (rt?.turnTimer) { clearTimeout(rt.turnTimer); rt.turnTimer = null; }
+      if (rt?.autoStartTimer) { clearTimeout(rt.autoStartTimer); rt.autoStartTimer = null; }
+      io.to(deskId).emit('desk:closed', {});
+      deskRuntime.delete(deskId);
     }
   }, delayMs);
 }
@@ -571,6 +625,32 @@ io.on('connection', (socket) => {
       const code = err instanceof ServiceError ? err.code : 'INTERNAL_ERROR';
       const message = err instanceof Error ? err.message : 'Leave failed';
       socket.emit('error', { code, message });
+    }
+  });
+
+  // desk:getSeats — read-only seat map for seat-picker UI. Targeted response only.
+  socket.on('desk:getSeats', async ({ deskId }: { deskId: string }) => {
+    try {
+      if (!deskId) {
+        socket.emit('error', { code: 'MISSING_DESK_ID', message: 'deskId required' });
+        return;
+      }
+      const desk = await PokerDesk.findById(deskId).lean();
+      if (!desk) {
+        socket.emit('error', { code: 'DESK_NOT_FOUND', message: 'Desk not found' });
+        return;
+      }
+      socket.emit('desk:seats', {
+        deskId,
+        seats: desk.seats.map((s) => ({
+          seatNumber: s.seatNumber,
+          userId: s.userId.toString(),
+          status: s.status,
+        })),
+        maxSeats: desk.maxSeats,
+      });
+    } catch (err) {
+      socket.emit('error', { code: 'INTERNAL_ERROR', message: 'Failed to fetch seats' });
     }
   });
 

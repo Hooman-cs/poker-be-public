@@ -21,7 +21,62 @@ it was built that way, LOGS.md is.
 
 ---
 
-## 2026-06-09 — TASKS 1.12 + 1.13 — wipeDb.ts + seedLobby.ts practice desk — PASS
+## 2026-06-10 — TASK 6.9 — Currency rendering + status dropdown audit — PASS (no code changes)
+
+[INVARIANT] All admin status controls were verified against actual model enums:
+Poker (active/maintenance/disabled), PokerMode (active/disabled), PokerDesk
+(active/disabled — 'closed' correctly excluded as engine-only), User
+(active/inactive/suspended), BankTransaction (pending/completed/failed),
+GatewayTransaction (created/pending/completed/failed). All match exactly.
+
+[INVARIANT] No `formatMoney` helper exists or is needed. Per the existing
+money invariant, every API response serializes money fields to formatted
+strings at the API edge (CONTRACTS.md: amount/stake/minBuyIn/maxBuyIn/balance/
+totalWinnings/lockedBonus/netChange/totalPot all typed `string`). Every
+admin component built in 6.2–6.8 renders these strings directly with zero
+client-side arithmetic on the display path. The only client-side money math
+is input-side (ModeCreateForm stake/buy-ins, UserBalanceControl amount),
+converting major units → minor units ×100 before POST — correct by design.
+
+**PHASE 6 COMPLETE.** All tasks 6.1–6.9 verified PASS.
+
+---
+
+Created `DeskCreateForm` + `DeskRowActions` (status select restricted to active/disabled — 'closed' is engine-only and never offered) and three server pages: desk list (with create form + row actions), read-only desk detail (config + live status, optional back-link via `?modeId=`), and game list (static gameType filter tabs, paginated, winners derived from `players.filter(isWinner)`). TypeScript compiled cleanly.
+
+---
+
+Created `PokerCreateForm` + `PokerRowActions` (collapsible form / two-step delete / status edit for game types) and `ModeCreateForm` + `ModeRowActions` (same pattern, money inputs in major units ×100 before POST). Both server pages use `fetchAdmin` with parallel fetches where needed. TypeScript compiled cleanly.
+
+---
+
+Created `TransactionsFilters` (status + type selects, immediate push), `BankTransactionActions` (renders null unless pending; separate approve/reject loading state; PATCH on click; router.refresh on success), `PgTransactionsFilters` (status only), bank transactions page (table with type/status badges, actions column, URL pagination preserving filters), and PG transactions page (gateway tx table, capitalised gateway, truncated order IDs). TypeScript compiled cleanly.
+
+---
+
+Created `fetchAdmin` shared helper (cookie-forwarded, `cache: 'no-store'`, redirects on 401). Built three pages (statistics, users list, user detail) plus `UsersFilters`, `UserStatusControl`, and `UserBalanceControl` client components. User detail page uses `Promise.all` for three parallel fetches and embeds `LatestGameHistory` and `UserBankTransactionsHistory` widgets. TypeScript compiled cleanly.
+
+---
+
+Created four files. Login page posts to `/api/admin/auth/login`, stores httpOnly `token` cookie on success, redirects to `/admin/overview`. Admin layout wraps Sidebar + content column. Overview page fetches dashboard data server-side (cookie-forwarded, `revalidate=300`) and renders all 7 widgets. Also appended `NEXT_PUBLIC_BASE_URL` to `.env.local`.
+
+[LESSON] Claude Code generated `position:fixed` on the Sidebar (`fixed left-0 top-0`), which pulled it out of the flex flow — the content column started at x=0, fully overlapping the sidebar. Always specify sidebar positioning explicitly in the prompt: `sticky top-0 h-screen flex-shrink-0` (stays in flex flow, pins to top on scroll). Never leave positioning unspecified for layout-critical components.
+
+---
+
+Extended `src/types/adminTypes.ts` with `PaginationInfo`, `UserGameEntry`, and `UserBankTransaction` — shapes verified against CONTRACTS.md 4.14 and 4.6. Created two server-component widgets with compact tables, badge helpers for type/status/result, ID truncation, duration formatting, and empty states. TypeScript compiled cleanly.
+
+---
+
+Created `src/types/adminTypes.ts` with `DashboardData` interface matching the dashboard API contract. Created 7 server-component widgets under `src/components/admin/widgets/` — all purely presentational, props-only, no fetch calls, no mock data. TypeScript compiled cleanly.
+
+---
+
+Created three shared admin UI components. Sidebar uses `usePathname` for active detection with combined `border-l-2 border-indigo-400 bg-white/[0.08]` active style and `border-l-2 border-transparent` inactive base — all items carry the `border-l-2` default so spacing is consistent. Header is a server component with `{ title, subtitle? }` props. SearchInput wraps a controlled input with an absolute-positioned `Search` icon from lucide-react. TypeScript compiled cleanly.
+
+[LESSON] lucide-react was NOT in `package.json` despite the prompt stating it was already installed. Claude Code added it silently. Before writing any prompt that claims a package is already installed, grep `package.json` directly. One read prevents unintended dependency additions.
+
+---
 
 Created `scripts/wipeDb.ts`: calls `.deleteMany({})` on all 12 operational collections (User, Wallet, WalletTransaction, BankAccount, BankTransaction, GatewayTransaction, Poker, PokerMode, PokerDesk, PokerGameArchive, PracticeSession, Admin), prints deleted count per collection, prints next-step instructions. AppConfig intentionally excluded so admin-configurable rates survive a wipe. Updated `scripts/seedLobby.ts`: added a third PokerMode (`mode: 'practice'`, `stake: 10000`) and a PokerDesk (`isPractice: true`, `tableName: 'Practice Table 1'`, `minToStart: 3`, `maxSeats: 6`) after the two existing cash desks. TypeScript compiled cleanly.
 
@@ -36,6 +91,60 @@ Fixed two test-script bugs in `scripts/tier2Smoke.ts` (not server bugs). Bug A: 
 Created idempotent seed script. Idempotency keyed on `Poker.description = "Lobby Seed — Texas Hold'em"` (not `gameType`, which has a unique index). Created one Poker + two PokerModes (Low Stakes stake=10000, High Stakes stake=50000) + one PokerDesk per mode. Second run confirmed idempotent. Two schema discoveries: `Poker` and `PokerMode` have no `name` field; PokerMode uses `description` for labels. `minToStart`/`minToContinue` schema floor is 3 (not 2 as originally spec'd in the task).
 
 Frontend issue found during integration: `GET /api/lobby/games` returns `{ message, games: [...] }` but the user frontend was reading `response.pokerData` (old API key). Fix is frontend-only — change to `response.games`. Response shape documented in `docs/USER_API_CHANGES.md`.
+
+---
+
+## 2026-06-10 — BUG B8 — atomic $pull bot eviction — PASS
+
+Replaced the per-bot `userLeavesSeat` loop in `handleNeedsShowdown` with a single `PokerDesk.findByIdAndUpdate({ $pull: { seats: { userId: { $in: botObjIds } } } }, { new: true })`. All bot seats removed atomically in one DB write — no lock needed, no per-bot race conditions. `runtime.botSeats.clear()` runs regardless of DB result. After the pull, if `updatedDesk.seats.length < updatedDesk.minToContinue`, the desk is marked closed, saved, `player:left` broadcast fires, `desk:closed` emitted, `deskRuntime.delete(deskId)` called, function returns early without calling `scheduleAutoStart`. TypeScript compiled cleanly; playOneHand and playLifecycle both passed.
+
+[INVARIANT] Bot seat eviction in `handleNeedsShowdown` MUST use a single atomic `$pull` operation, not a per-bot `userLeavesSeat` loop. The per-bot loop is vulnerable to races from concurrent socket events arriving between `await` calls.
+
+---
+
+## 2026-06-10 — BUGS FOUND (third pass) — B8 B6-race + B9 frontend flow
+
+B8: The B6 per-bot `userLeavesSeat` loop in `handleNeedsShowdown` races against the frontend's immediate `practice (auto-restart)` and `leave` events. These events arrive at the server between `await userLeavesSeat` calls, interfering with the eviction. All 5 catch blocks swallow failures silently. The desk never closes; bots remain seated; `desks/best` returns the same stale desk. Fix: replace the loop with a single atomic `PokerDesk.findByIdAndUpdate($pull)` removing all bot seats, then close desk directly if seats drop below `minToContinue`.
+
+B9: Frontend emits `practice (auto-restart)` immediately after `game:showdown` on the same desk. `addUserToSeat` fails (human still seated), frontend panics and emits `leave` twice, disconnects. Correct flow: do nothing after `game:showdown` — wait for `desk:closed`, then call `desks/best` for a fresh desk and emit `practice`. Frontend developer fix.
+
+---
+
+## 2026-06-09 — BUGS B6+B7 — stale bot seats + AdaptiveStrategy — PASS
+
+B6: Added bot eviction loop in `handleNeedsShowdown` (after `game:showdown` broadcast, before `scheduleAutoStart`). Iterates `runtime.botSeats`, calls `userLeavesSeat` for each, handles desk closure on final eviction. Practice desks are now single-use per session — desk closes gracefully after showdown, user gets a fresh desk from the pool on next `desks/best` call.
+
+B7: Replaced `EasyStrategy`, `MediumStrategy`, `HardStrategy` with a single `AdaptiveStrategy`. Uses pre-flop hole card ranking table (pairs, broadways, suited connectors) and pokersolver post-flop hand evaluation. Decision matrix: raise on strength >= 7.5, call on >= 4.5, check when free, fold to bets on weak hands with 25% bluff-call. 12% global bluff probability. ±1 strength jitter for variance. `getBotStrategy` returns `new AdaptiveStrategy()` for all input values. Minor fix applied directly: `rankOrder` corrected from `'T'` to `'10'` to match `CardRank` type (tens were getting index -1 in pre-flop lookup). All Tier-1 smoke tests passed.
+
+[INVARIANT] Bot strategies must use `'10'` (not `'T'`) in pre-flop rank lookup arrays. `CardRank` in the model uses `'10'` for ten. `pokersolver` post-flop evaluation uses `'T'` (passed via `toPS` conversion) — these are two different notations for two different consumers.
+
+---
+
+## 2026-06-09 — BUGS FOUND (second pass) — B6 stale bots + B7 flat strategy
+
+B6: After `game:showdown`, bot seats persist in the desk document. Next user joining via `practice` event gets a desk full of ghost bots from the dead session. Old bot IDs are not in the new session’s `runtime.botSeats`, so they receive 60s human timers instead of bot routing. Fix: evict all bots from `runtime.botSeats` via `userLeavesSeat` inside `handleNeedsShowdown` after the showdown broadcast. Desk drops below `minToContinue` and closes. Next user gets a fresh desk from the 20-desk pool.
+
+B7: Post-B2 fix, bots now check correctly but still never fold or raise. EasyStrategy is the only strategy being used in practice (frontend sends `strategy: 'easy'`). All three strategies produce flat, uninteresting games. Fix: replace all three strategies with a single `AdaptiveStrategy` using pre-flop hand ranking table + post-flop pokersolver evaluation + 10–15% bluff probability. `getBotStrategy` returns `new AdaptiveStrategy()` for all values.
+
+Additional: bot winner username shows as `"unknown"` in `potResults` (bots have no User document). Frontend should substitute `"Bot N"` using seat number when `username === "unknown"`.
+
+---
+
+## 2026-06-09 — BUGS B1+B2+B3 — scheduleAutoStart / bot callAmount / desk:getSeats — PASS
+
+B1: Wrapped entire `scheduleAutoStart` callback in top-level try/catch. Added broke-bot pre-check before `createGame`: iterates seats with `balanceAtTable === 0` that are in `botSeats`, calls `userLeavesSeat` for each, handles `needsShowdown` and closure correctly. On any error in the callback, emits `desk:closed` and cleans up `deskRuntime` gracefully.
+
+B2: Root cause confirmed — `IPokerGame` has NO dedicated per-round bet field. `game.totalBet` and `player.totalBet` are both cumulative for the entire hand. Correct call amount must be derived from `game.rounds.at(-1).actions`. Added `calcCallAmount(game, player)` helper in `bots/index.ts` that mirrors the engine’s own `calculateCallAmount` function. Applied to all three strategies (Easy, Medium, Hard). Without a dedicated schema field, this derivation from round actions is the correct and only approach.
+
+[INVARIANT] `IPokerGame` has no `currentRoundBet` or equivalent per-round field. Bot strategies (and any other code needing the current outstanding bet) MUST derive it from `game.rounds.at(-1).actions`. Never use `game.totalBet - player.totalBet` for this purpose — that is a cumulative value spanning all rounds.
+
+B3: Added `desk:getSeats` C→S handler. Responds with targeted `desk:seats` event `{ deskId, seats: [{ seatNumber, userId, status }], maxSeats }`. No lock needed (read-only). All three Tier-1 smoke tests passed.
+
+---
+
+## 2026-06-09 — BUGS FOUND — Frontend integration testing (Phase 5 socket layer)
+
+Five bugs found during first real frontend integration test against the live server. Full details in `docs/BUGS.md`. Backend bugs: (B1) socket transport error after showdown caused by unhandled error in `scheduleAutoStart` callback — suspected broke bot trying to post blind; (B2) all three bot strategies use cumulative `game.totalBet` for `callAmount` instead of the current-round field, causing bots to call ₹200 on every post-flop street when they should check; (B3) frontend emits `desk:getSeats` before seat selection but server has no handler for this event. Frontend bugs: (B4) double slash in lobby URL from base URL constant; (B5) oscillating action amounts display from two conflicting state sources. Backend bugs B1-B3 queued for Claude Code fix. Frontend bugs B4-B5 documented for frontend developer.
 
 ---
 

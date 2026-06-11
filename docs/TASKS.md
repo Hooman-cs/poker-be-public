@@ -244,18 +244,57 @@ Order = dependency order. Each route reviewed before the next.
 
 Components first, then pages.
 
-- [ ] 6.1  Components: Sidebar, Header, SearchInput
-- [ ] 6.2  Dashboard widgets: UserStats, BankStats, GameStats, GameUsage, BankTransactionOverview, LatestPlayers, LeaderBoard
-- [ ] 6.3  LatestGameHistory, UserBankTransactionsHistory
-- [ ] 6.4  `auth/login` page + `app/page.tsx` redirect + `app/admin/overview/page.tsx` (the post-login
-           landing surface — small panels showing users / transactions / games / statistics with links
-           to each section's deep page). **Middleware (task 1.6) redirects to this path** — until it
-           exists, the post-login flow lands on a 404.
-- [ ] 6.5  Pages: statistics, users, users/[userId]
-- [ ] 6.6  Pages: transactions, PGTransactions
-- [ ] 6.7  Pages: poker mgmt (`admin/page`), pokerMode/[pokerId]
-- [ ] 6.8  Pages: pokerDesk/[pokerModeId], pokerDesk/details/[pokerDeskId], gameList
-- [ ] 6.9  Currency rendered via `formatMoney`; status dropdowns use model enums only
+- [x] 6.1  Components: Sidebar, Header, SearchInput
+- [x] 6.2  Dashboard widgets: UserStats, BankStats, GameStats, GameUsage, BankTransactionOverview, LatestPlayers, LeaderBoard
+- [x] 6.3  LatestGameHistory, UserBankTransactionsHistory
+- [x] 6.4  `auth/login` page + `app/page.tsx` redirect + `app/admin/overview/page.tsx`
+- [x] 6.5  Pages: statistics, users, users/[userId]
+- [x] 6.6  Pages: transactions, PGTransactions
+- [x] 6.7  Pages: poker mgmt (`admin/page`), pokerMode/[pokerId]
+- [x] 6.8  Pages: pokerDesk/[pokerModeId], pokerDesk/details/[pokerDeskId], gameList
+- [x] 6.9  Currency rendered via `formatMoney`; status dropdowns use model enums only
+
+---
+
+## BUGS — Found During Frontend Testing
+
+Full details in `docs/BUGS.md`. Backend bugs are fixed via Claude Code;
+frontend bugs are for the frontend developer.
+
+### Backend (server-side fixes needed)
+- [x] B1 — Socket transport error after showdown; hand 2 never starts.
+- [x] B2 — `EasyStrategy` (and likely `MediumStrategy`, `HardStrategy`) calls instead
+           of checking post-flop.
+- [x] B3 — Missing `desk:getSeats` socket event handler.
+
+### Frontend (frontend developer to fix)
+- [ ] B4 — Double slash in lobby URL: `/api//lobby/games`. Trailing slash in base URL
+           constant concatenated with leading slash in path.
+- [ ] B5 — Oscillating amounts display (0 ↔ actual values every render). Two parallel
+           state sources conflicting — local `playerActions` tracker resetting
+           independently from socket-driven desk state.
+
+### Backend — second pass
+- [x] B6 — Stale bot seats persist after practice session ends.
+- [x] B7 — Bot strategy produces flat, uninteresting gameplay.
+
+### Backend — third pass
+- [x] B8 — B6 eviction races with frontend events; desk never closes after showdown.
+           (Superseded — root cause: `$pull` by ObjectId is unreliable without persistent
+           bot records. Re-implemented via dedicated `Bot` model in task 1.16.)
+
+### Backend — fourth pass
+- [ ] B10 — B8 `$pull` fails silently — bots not stored in DB so no reliable way to
+           identify bot seat userId values for `$pull`. Fix: `Bot` model
+           (`deskId`, `botId`, `seatNumber`, `strategy`). `addBotToSeat` creates a
+           `Bot` record; B8 reads `Bot.find({ deskId })` → `$pull` by exact `botId`
+           values → `Bot.deleteMany({ deskId })`. See task 1.16.
+
+### Frontend (frontend developer to fix)
+- [ ] B4 — Double slash in lobby URL.
+- [ ] B5 — Oscillating amounts display.
+- [ ] B9 — Frontend emits `practice (auto-restart)` immediately after `game:showdown`.
+           Correct flow: wait for `desk:closed`, then `desks/best` + `practice` on new desk.
 
 ---
 

@@ -144,6 +144,40 @@ for additive changes; do log signature changes.
 | `src/services/botService.ts` | Level 4 (bot seating only; acquires desk lock internally — never call from inside `withDeskLock`) |
 | `src/lib/bots/index.ts` | Level 4 (strategy implementations are intentionally swappable; `getBotStrategy` is the only public entry point) |
 | `src/app/api/admin/practiceSessions/route.ts` | Level 4 (admin route; additive changes OK) |
+| `src/components/admin/Sidebar.tsx` | Level 4 (shared admin UI; used on every page — don't break nav structure, route list, or active-state logic without updating all consumers) |
+| `src/components/admin/Header.tsx` | Level 4 (shared admin UI; pure server component — additive props OK) |
+| `src/components/admin/SearchInput.tsx` | Level 4 (shared admin UI; pure controlled component — additive props OK) |
+| `src/types/adminTypes.ts` | Level 4 (shared DashboardData interface; field names must stay in sync with dashboard API contract in CONTRACTS.md) |
+| `src/components/admin/widgets/*.tsx` | Level 4 (7 presentational widgets — UserStats, BankStats, GameStats, GameUsage, BankTransactionOverview, LatestPlayers, LeaderBoard; all accept typed DashboardData props; don't rename props without updating all consumers) |
+| `src/components/admin/widgets/LatestGameHistory.tsx` | Level 4 (user detail widget; props shape tied to analytics/users/[userId] contract) |
+| `src/components/admin/widgets/UserBankTransactionsHistory.tsx` | Level 4 (user detail widget; props shape tied to bankTransactions contract) |
+| `src/app/page.tsx` | Level 4 (root redirect — always points to /admin/overview) |
+| `src/app/auth/login/page.tsx` | Level 4 (admin login form; POST /api/admin/auth/login; do not add client-side token storage — cookie is httpOnly) |
+| `src/app/admin/layout.tsx` | Level 4 (admin shell — Sidebar + content column; must use `h-screen overflow-hidden` outer + `overflow-y-auto` content; never use fixed positioning on Sidebar) |
+| `src/app/admin/overview/page.tsx` | Level 4 (dashboard landing; server component; revalidate=300; fetches dashboard API with forwarded token cookie) |
+| `src/lib/admin/fetchAdmin.ts` | Level 4 (shared admin fetch helper; all admin pages depend on its cookie-forwarding + redirect-on-401 behaviour; do not change signature without updating all callers) |
+| `src/components/admin/UsersFilters.tsx` | Level 4 (client component; updates URL params for users list) |
+| `src/components/admin/users/UserStatusControl.tsx` | Level 4 (client component; PATCH user status) |
+| `src/components/admin/users/UserBalanceControl.tsx` | Level 4 (client component; POST locked bonus adjustment) |
+| `src/app/admin/statistics/page.tsx` | Level 4 (games archive list; server component) |
+| `src/app/admin/users/page.tsx` | Level 4 (users list; server component; reads searchParams) |
+| `src/app/admin/users/[userId]/page.tsx` | Level 4 (user detail; server component; parallel fetches) |
+| `src/components/admin/transactions/TransactionsFilters.tsx` | Level 4 (client; bank tx filter) |
+| `src/components/admin/transactions/BankTransactionActions.tsx` | Level 4 (client; approve/reject pending bank tx) |
+| `src/components/admin/transactions/PgTransactionsFilters.tsx` | Level 4 (client; PG tx filter) |
+| `src/app/admin/transactions/page.tsx` | Level 4 (bank tx list; server component) |
+| `src/app/admin/pgTransactions/page.tsx` | Level 4 (PG/gateway tx list; server component) |
+| `src/components/admin/poker/PokerCreateForm.tsx` | Level 4 (client; create poker game type) |
+| `src/components/admin/poker/PokerRowActions.tsx` | Level 4 (client; edit status + two-step delete per poker row) |
+| `src/components/admin/poker/ModeCreateForm.tsx` | Level 4 (client; create mode — money inputs in major units multiplied ×100) |
+| `src/components/admin/poker/ModeRowActions.tsx` | Level 4 (client; edit status + two-step delete per mode row) |
+| `src/app/admin/poker/page.tsx` | Level 4 (poker game types list; server component) |
+| `src/app/admin/pokerMode/[pokerId]/page.tsx` | Level 4 (modes list for a game type; server component) |
+| `src/components/admin/poker/DeskCreateForm.tsx` | Level 4 (client; create desk) |
+| `src/components/admin/poker/DeskRowActions.tsx` | Level 4 (client; status select offers active/disabled only — 'closed' is engine-only) |
+| `src/app/admin/pokerDesk/[pokerModeId]/page.tsx` | Level 4 (desk list for a mode; server component) |
+| `src/app/admin/pokerDesk/details/[deskId]/page.tsx` | Level 4 (read-only desk config + live status; server component) |
+| `src/app/admin/gameList/page.tsx` | Level 4 (game archive list with gameType filter tabs; server component) |
 
 ---
 

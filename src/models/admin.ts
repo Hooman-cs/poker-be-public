@@ -56,7 +56,7 @@ const AdminSchema = new Schema<IAdminDocument>(
     password: {
       type: String,
       required: [true, 'Password is required'],
-      minlength: [12, 'Password must be at least 12 characters'],
+      minlength: [8, 'Password must be at least 8 characters'],
     },
     role: {
       type: String,

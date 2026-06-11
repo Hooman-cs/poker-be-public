@@ -60,7 +60,7 @@ async function main(): Promise<void> {
       bType: 'blinds',
       mode: 'practice',
       description: SEED_MARKER,   // idempotency key
-      stake: 10000,               // ₹100 SB — irrelevant for practice but required
+      stake: 1000,               // ₹100 SB — irrelevant for practice but required
       minBuyIn: 100000,           // ₹1 000
       maxBuyIn: 1000000,          // ₹10 000
       currency: 'INR',
@@ -77,7 +77,7 @@ async function main(): Promise<void> {
       mode: 'practice',
       isPractice: true,
       currency: 'INR',
-      stake: 10000,
+      stake: 1000,
       minBuyIn: 100000,
       maxBuyIn: 1000000,
       minToStart: 3,

@@ -2205,6 +2205,7 @@ isPractice?: boolean  // default false — desk will use PRACTICE_STARTING_CHIPS
 | `join` | `JoinPayload` | `{ deskId, seatNumber, buyInAmount }` |
 | `action` | `ActionPayload` | `{ deskId, action, amount? }` |
 | `leave` | `LeavePayload` | `{ deskId }` |
+| `desk:getSeats` | `{ deskId: string }` | Read-only seat map request; no auth beyond handshake |
 
 **Server → Client** (S→C, room broadcast unless noted)
 | Event | Payload | Notes |
@@ -2217,6 +2218,7 @@ isPractice?: boolean  // default false — desk will use PRACTICE_STARTING_CHIPS
 | `game:showdown` | `{ desk, potResults }` | `potResults[].winners[].userId` serialized as string |
 | `desk:closed` | `{}` | Broadcast to room |
 | `turn:start` | `{ deadline: Date }` | Targeted (60s window) |
+| `desk:seats` | `{ deskId, seats, maxSeats }` | Targeted — response to `desk:getSeats` only |
 | `error` | `{ code, message }` | Targeted — only to offending socket |
 
 ---
@@ -2277,6 +2279,9 @@ const deskRuntime = new Map<string, DeskRuntimeState>();
 - `[INVARIANT]` Auto-start timer is replaced (clearTimeout + new setTimeout) every time `scheduleAutoStart` is called for the same desk — prevents double-start races.
 - `[INVARIANT]` After `game:start` broadcast, `startTurnTimer(deskId, currentTurnPlayer)` is called — this both emits a targeted `turn:start { deadline }` to the player's socket AND starts the 60s server-side auto-fold timer. There is no separate targeted emit for turn:start elsewhere.
 - `[INVARIANT]` Auto-start threshold: cold desk (firstGameStartedAt === null) → `desk.minToStart`; warm desk → `desk.minToContinue`.
+- `[INVARIANT]` `desk:seats` response is always `socket.emit` (targeted) — never `io.to(deskId).emit`. It is a point-to-point response to `desk:getSeats`.
+- `[INVARIANT]` `desk:seats` payload shape: `{ deskId: string; seats: Array<{ seatNumber: number; userId: string; status: string }>; maxSeats: number }`. `userId` is serialized to string.
+- `[INVARIANT]` `scheduleAutoStart` removes broke bot seats (balanceAtTable === 0) via `userLeavesSeat` before calling `createGame`. Any unexpected error inside the callback logs to stderr and emits `desk:closed`, preventing a silent process crash.
 
 ---
 

@@ -66,7 +66,8 @@ async function main(): Promise<void> {
       pokerId: poker._id,
       gameType: "Texas Hold'em",
       bType: 'blinds',
-      stake: 10000,       // ₹100 SB (minor units)
+      stake: 1000,       // ₹100 SB (minor units)
+      // minBuyIn: 100000,   // ₹1 000
       minBuyIn: 100000,   // ₹1 000
       maxBuyIn: 1000000,  // ₹10 000
       currency: 'INR',
@@ -80,7 +81,7 @@ async function main(): Promise<void> {
       pokerId: poker._id,
       gameType: "Texas Hold'em",
       bType: 'blinds',
-      stake: 50000,        // ₹500 SB (minor units)
+      stake: 5000,        // ₹500 SB (minor units)
       minBuyIn: 500000,    // ₹5 000
       maxBuyIn: 5000000,   // ₹50 000
       currency: 'INR',
@@ -101,7 +102,7 @@ async function main(): Promise<void> {
       mode: 'cash',
       isPractice: false,
       currency: 'INR',
-      stake: 10000,
+      stake: 1000,
       minBuyIn: 100000,
       maxBuyIn: 1000000,
       minToStart: 3,
@@ -122,7 +123,7 @@ async function main(): Promise<void> {
       mode: 'cash',
       isPractice: false,
       currency: 'INR',
-      stake: 50000,
+      stake: 5000,
       minBuyIn: 500000,
       maxBuyIn: 5000000,
       minToStart: 3,
@@ -139,7 +140,7 @@ async function main(): Promise<void> {
       pokerId: poker._id,
       gameType: "Texas Hold'em",
       bType: 'blinds',
-      stake: 10000,
+      stake: 1000,
       minBuyIn: 100000,
       maxBuyIn: 1000000,
       currency: 'INR',
@@ -157,7 +158,7 @@ async function main(): Promise<void> {
       mode: 'practice',
       isPractice: true,
       currency: 'INR',
-      stake: 10000,
+      stake: 1000,
       minBuyIn: 100000,
       maxBuyIn: 1000000,
       minToStart: 3,
