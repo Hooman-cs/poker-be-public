@@ -6,6 +6,7 @@ import { fetchAdmin } from '@/lib/admin/fetchAdmin';
 
 interface ModeShape {
   id: string;
+  pokerId: string;
   gameType: string;
   stake: string;
   mode: string;
@@ -65,6 +66,12 @@ export default async function PokerDeskPage({
 
   return (
     <>
+      <Link
+        href={mode?.pokerId ? `/admin/pokerMode/${mode.pokerId}` : '/admin/poker'}
+        className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-indigo-600 mb-2 px-6 pt-4"
+      >
+        ← Back to modes
+      </Link>
       <Header
         title={mode ? `${mode.gameType} — ${mode.stake} stake` : 'Desks'}
         subtitle={`${desks.length} desk${desks.length !== 1 ? 's' : ''}`}
@@ -103,7 +110,14 @@ export default async function PokerDeskPage({
                     {d.minToStart} – {d.maxPlayerCount}
                   </td>
                   <td className="px-4 py-3">
-                    <DeskRowActions id={d.id} currentStatus={d.status} />
+                    <DeskRowActions
+                      id={d.id}
+                      currentStatus={d.status}
+                      currentTableName={d.tableName}
+                      currentMinToStart={d.minToStart}
+                      currentMinToContinue={d.minToContinue}
+                      currentMaxPlayerCount={d.maxPlayerCount}
+                    />
                   </td>
                 </tr>
               ))}

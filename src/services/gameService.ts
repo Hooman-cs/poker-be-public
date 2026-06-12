@@ -28,6 +28,7 @@ import Wallet from '@/models/wallet';
 import WalletTransaction from '@/models/walletTransaction';
 import PokerGameArchive from '@/models/pokerGameArchive';
 import User from '@/models/user';
+import Bot from '@/models/bot';
 
 import {
   initializeGameState,
@@ -746,12 +747,23 @@ export async function createGame(
     //   - Warm desk (firstGameStartedAt !== null): the desk has had at least one
     //     hand. Gate relaxes to desk.minToContinue (3 — the schema floor).
     //     This lets the game continue naturally as players leave, down to 3.
-    const eligibleCount = desk.seats.filter(
-      (s) => s.status === 'active' && s.balanceAtTable >= desk.minBuyIn
-    ).length;
     const minRequired = desk.firstGameStartedAt
       ? desk.minToContinue
       : desk.minToStart;
+
+    // Eligibility threshold: cold desk (no hand played yet) gates on minBuyIn
+    // (the sit-down check). Warm desk gates on the cost of this hand's
+    // largest forced bet — chips fluctuate hand-to-hand and minBuyIn is NOT
+    // a per-hand continuation requirement. See LOGS.md 2026-06-11.
+    const minChipsToContinue =
+      desk.bType === 'blinds' ? desk.stake * 2 : desk.stake;
+    const eligibilityThreshold = desk.firstGameStartedAt
+      ? minChipsToContinue
+      : desk.minBuyIn;
+
+    const eligibleCount = desk.seats.filter(
+      (s) => s.status === 'active' && s.balanceAtTable >= eligibilityThreshold
+    ).length;
     if (eligibleCount < minRequired) {
       throw new InvalidStateError(
         `Not enough eligible players: need ${minRequired}, have ${eligibleCount}`
@@ -766,7 +778,7 @@ export async function createGame(
     //     number, wrapping) to the next eligible seat.
     // Empty seats and ineligible seats (insufficient balance) are skipped.
     const eligibleByNumber = desk.seats
-      .filter((s) => s.status === 'active' && s.balanceAtTable >= desk.minBuyIn)
+      .filter((s) => s.status === 'active' && s.balanceAtTable >= eligibilityThreshold)
       .sort((a, b) => a.seatNumber - b.seatNumber);
 
     let buttonSeatNumber: number;
@@ -797,7 +809,7 @@ export async function createGame(
       desk.bType === 'blinds' ? 'blinds' : 'antes',
       desk.stake,
       desk.gameType,
-      desk.minBuyIn,
+      eligibilityThreshold,
       buttonSeatNumber
     );
 
@@ -1115,6 +1127,11 @@ export async function showdown(
       ])
     );
 
+    const bots = await Bot.find({ deskId: desk._id }).lean();
+    for (const bot of bots) {
+      usernameByUserId.set(bot.botId.toString(), bot.botName);
+    }
+
     // Determine pots and winners.
     //
     // Single-survivor short-circuit: if everyone but one player has folded,
@@ -1202,6 +1219,7 @@ export async function showdown(
       pokerModeId: desk.pokerModeId,
       gameType: desk.gameType,
       currency: desk.currency,
+      mode: desk.mode,
       players: archiveCore.players,
       pots: archiveCore.pots,
       totalPot: archiveCore.totalPot,

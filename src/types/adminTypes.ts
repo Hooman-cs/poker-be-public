@@ -29,3 +29,16 @@ export interface DashboardData {
   recentUsers: { userId: string; username: string; email: string; status: string; createdAt: Date }[];
   leaderboard: { userId: string; username: string; totalWinnings: string }[];
 }
+
+export interface StatisticsData {
+  dailySignups: { date: string; count: number }[];
+  dailyCashGames: { date: string; count: number }[];
+  /** RAW INTEGER MINOR UNITS -- see LOGS.md 2026-06-11. Not serializeMoney. */
+  dailyDepositVolume: { date: string; amount: number }[];
+  totals: {
+    signups30d: number;
+    cashGames30d: number;
+    depositVolume30d: string;
+  };
+  leaderboard: { userId: string; username: string; totalWinnings: string }[];
+}

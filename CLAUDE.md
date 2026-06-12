@@ -117,7 +117,7 @@ src/
   lib/api/          ← money.ts, errors.ts
   models/           ← Mongoose schemas
   services/         ← gameService.ts (frozen), future service files
-  types/            ← shared DTOs (pokerModelTypes.ts)
+  types/            ← shared admin DTOs (adminTypes.ts)
   utils/            ← jwt.ts (frozen), helpers.ts
 scripts/            ← CLI tools and smoke tests (repo root, NOT under src/)
 ```

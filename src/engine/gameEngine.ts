@@ -388,8 +388,14 @@ export function determineRoundProgression(
 
 /**
  * Builds the initial game state from active seats. Seats with insufficient
- * balance to meet minBuyIn are excluded — the service is responsible for
- * cleaning those seats up after this returns.
+ * balance to meet eligibilityThreshold are excluded — the service is
+ * responsible for cleaning those seats up after this returns.
+ *
+ * The caller (gameService.createGame) determines eligibilityThreshold based
+ * on cold vs warm desk state: a cold desk (no hand played yet) uses minBuyIn,
+ * a warm desk uses the per-hand chip floor (2*stake for blinds, stake for
+ * antes). The engine itself is agnostic to that distinction — it just filters
+ * on the threshold it is handed. See LOGS.md 2026-06-11.
  *
  * Button rotation (task 1.9, see LOGS.md 2026-06-01):
  *   The `buttonSeatNumber` parameter identifies which seat currently holds
@@ -398,7 +404,7 @@ export function determineRoundProgression(
  *     - BB = next eligible seat clockwise of SB
  *     - UTG (first to act pre-flop) = next eligible seat clockwise of BB
  *   "Clockwise" = increasing seat number, wrapping at maxSeats back to 1.
- *   Only eligible (active + min-buyin) seats are considered for SB/BB/UTG.
+ *   Only eligible (active + above eligibilityThreshold) seats are considered for SB/BB/UTG.
  *
  * The `players` array preserves seat-arrival order (NOT button-relative
  * order) so that historical references — currentTurnPlayer lookups, archive
@@ -410,11 +416,11 @@ export function initializeGameState(
   bType: 'blinds' | 'antes',
   stake: number,
   gameType: PokerGameType,
-  minBuyIn: number,
+  eligibilityThreshold: number,
   buttonSeatNumber: number
 ): IInitialGameState {
   const eligibleSeats = seats.filter(
-    (s) => s.status === 'active' && s.balanceAtTable >= minBuyIn
+    (s) => s.status === 'active' && s.balanceAtTable >= eligibilityThreshold
   );
 
   if (eligibleSeats.length < 3) {

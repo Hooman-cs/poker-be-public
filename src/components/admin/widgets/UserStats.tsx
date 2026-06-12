@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import type { DashboardData } from '@/types/adminTypes';
 
 interface Props {
@@ -16,10 +17,10 @@ export default function UserStats({ users }: Props) {
   return (
     <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
       {stats.map(({ label, value }) => (
-        <div key={label} className="bg-white rounded-lg border border-slate-200 p-5">
+        <Link key={label} href="/admin/users" className="bg-white rounded-lg border border-slate-200 p-5 hover:border-indigo-300 transition-colors">
           <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">{label}</p>
           <p className="text-2xl font-semibold text-slate-900 mt-1">{value}</p>
-        </div>
+        </Link>
       ))}
     </div>
   );

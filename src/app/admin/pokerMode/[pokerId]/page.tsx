@@ -67,6 +67,12 @@ export default async function PokerModePage({
 
   return (
     <>
+      <Link
+        href="/admin/poker"
+        className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-indigo-600 mb-2 px-6 pt-4"
+      >
+        ← Back to games
+      </Link>
       <Header
         title={poker?.gameType ?? 'Poker modes'}
         subtitle={`${modes.length} mode${modes.length !== 1 ? 's' : ''}`}
@@ -103,7 +109,14 @@ export default async function PokerModePage({
                     </Link>
                   </td>
                   <td className="px-4 py-3">
-                    <ModeRowActions id={m.id} currentStatus={m.status} />
+                    <ModeRowActions
+                      id={m.id}
+                      currentStatus={m.status}
+                      currentStake={m.stake}
+                      currentMinBuyIn={m.minBuyIn}
+                      currentMaxBuyIn={m.maxBuyIn}
+                      currency={m.currency}
+                    />
                   </td>
                 </tr>
               ))}

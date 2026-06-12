@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import type { DashboardData } from '@/types/adminTypes';
 
 interface Props {
@@ -12,7 +13,7 @@ export default function BankTransactionOverview({ bankTransactions }: Props) {
   ];
 
   return (
-    <div className="bg-white rounded-lg border border-slate-200 p-5">
+    <Link href="/admin/transactions" className="block bg-white rounded-lg border border-slate-200 p-5 hover:border-indigo-300 transition-colors">
       <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-3">Bank Transactions</p>
       <ul className="divide-y divide-slate-100">
         {rows.map(({ label, count, amber }) => (
@@ -28,6 +29,6 @@ export default function BankTransactionOverview({ bankTransactions }: Props) {
           </li>
         ))}
       </ul>
-    </div>
+    </Link>
   );
 }

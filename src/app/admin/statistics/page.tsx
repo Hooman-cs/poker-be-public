@@ -1,29 +1,9 @@
 import Link from 'next/link';
 import Header from '@/components/admin/Header';
+import TrendChart from '@/components/admin/widgets/TrendChart';
 import { fetchAdmin } from '@/lib/admin/fetchAdmin';
-
-interface GamePlayer {
-  userId: string;
-  username: string;
-  isWinner: boolean;
-  netChange: string;
-}
-
-interface GameEntry {
-  id: string;
-  gameType: string;
-  currency: string;
-  totalPot: string;
-  playerCount: number;
-  durationSeconds: number;
-  completedAt: Date;
-  players: GamePlayer[];
-}
-
-interface GamesData {
-  games: GameEntry[];
-  pagination: { page: number; limit: number; total: number; totalPages: number };
-}
+import { toMajor, DEFAULT_CURRENCY } from '@/config/constants';
+import type { StatisticsData } from '@/types/adminTypes';
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
@@ -34,84 +14,76 @@ function StatCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-export default async function StatisticsPage({
-  searchParams,
-}: {
-  searchParams: { page?: string };
-}) {
-  const page = searchParams.page ?? '1';
-  const { games, pagination } = await fetchAdmin<GamesData>('/api/admin/analytics/games', {
-    page,
-    limit: '20',
-  });
+export default async function StatisticsPage() {
+  const data = await fetchAdmin<StatisticsData>('/api/admin/analytics/statistics');
+
+  const labels = data.dailySignups.map((d) => d.date.slice(5));
+  const signupsSeries = data.dailySignups.map((d) => d.count);
+  const cashGamesSeries = data.dailyCashGames.map((d) => d.count);
+  const depositSeries = data.dailyDepositVolume.map((d) => toMajor(d.amount, DEFAULT_CURRENCY));
 
   return (
     <>
       <Header title="Statistics" />
-      <div className="p-6">
-        <div className="grid grid-cols-3 gap-4 mb-6">
-          <StatCard label="Total games" value={String(pagination.total)} />
-          <StatCard label="This page" value={String(games.length)} />
-          <StatCard label="Page" value={`${pagination.page} of ${pagination.totalPages}`} />
+      <div className="p-6 space-y-6">
+        <div className="grid grid-cols-3 gap-4">
+          <StatCard label="New signups (30d)" value={String(data.totals.signups30d)} />
+          <StatCard label="Cash games played (30d)" value={String(data.totals.cashGames30d)} />
+          <StatCard label="Deposit volume (30d)" value={data.totals.depositVolume30d} />
         </div>
 
-        <div className="bg-white rounded-lg border border-slate-200">
-          <table className="w-full">
-            <thead className="bg-slate-50">
-              <tr>
-                <th className="text-left text-xs font-medium text-slate-500 uppercase tracking-wide px-4 py-3 border-b border-slate-200">Game ID</th>
-                <th className="text-left text-xs font-medium text-slate-500 uppercase tracking-wide px-4 py-3 border-b border-slate-200">Type</th>
-                <th className="text-left text-xs font-medium text-slate-500 uppercase tracking-wide px-4 py-3 border-b border-slate-200">Total pot</th>
-                <th className="text-left text-xs font-medium text-slate-500 uppercase tracking-wide px-4 py-3 border-b border-slate-200">Players</th>
-                <th className="text-left text-xs font-medium text-slate-500 uppercase tracking-wide px-4 py-3 border-b border-slate-200">Duration</th>
-                <th className="text-left text-xs font-medium text-slate-500 uppercase tracking-wide px-4 py-3 border-b border-slate-200">Completed</th>
-                <th className="text-left text-xs font-medium text-slate-500 uppercase tracking-wide px-4 py-3 border-b border-slate-200">Winners</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {games.map((g) => (
-                <tr key={g.id}>
-                  <td className="px-4 py-3">
-                    <span className="font-mono text-xs text-slate-400">...{g.id.slice(-8)}</span>
-                  </td>
-                  <td className="text-sm text-slate-600 px-4 py-3">{g.gameType}</td>
-                  <td className="text-sm text-slate-900 px-4 py-3">{g.totalPot}</td>
-                  <td className="text-sm text-slate-900 px-4 py-3">{g.playerCount}</td>
-                  <td className="text-sm text-slate-900 px-4 py-3">
-                    {`${Math.floor(g.durationSeconds / 60)}m ${g.durationSeconds % 60}s`}
-                  </td>
-                  <td className="text-sm text-slate-900 px-4 py-3">
-                    {new Date(g.completedAt).toLocaleDateString('en-IN')}
-                  </td>
-                  <td className="text-sm text-slate-900 px-4 py-3">
-                    {g.players.filter((p) => p.isWinner).map((p) => p.username).join(', ')}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="grid grid-cols-3 gap-4">
+          <TrendChart title="Daily new signups" labels={labels} data={signupsSeries} type="line" />
+          <TrendChart
+            title="Daily cash games played"
+            labels={labels}
+            data={cashGamesSeries}
+            type="line"
+            borderColor="rgb(16, 185, 129)"
+            backgroundColor="rgba(16, 185, 129, 0.5)"
+          />
+          <TrendChart
+            title="Daily deposit volume"
+            labels={labels}
+            data={depositSeries}
+            type="bar"
+            borderColor="rgb(245, 158, 11)"
+            backgroundColor="rgba(245, 158, 11, 0.5)"
+          />
+        </div>
 
-          <div className="px-4 py-3 border-t border-slate-100 flex justify-between items-center">
-            <span className="text-xs text-slate-400">Showing {games.length} of {pagination.total}</span>
-            <div className="flex gap-2">
-              {pagination.page > 1 && (
-                <Link
-                  href={`/admin/statistics?page=${pagination.page - 1}`}
-                  className="text-sm px-3 py-1.5 rounded border border-slate-200 hover:bg-slate-50"
-                >
-                  ← Prev
-                </Link>
-              )}
-              {pagination.page < pagination.totalPages && (
-                <Link
-                  href={`/admin/statistics?page=${pagination.page + 1}`}
-                  className="text-sm px-3 py-1.5 rounded border border-slate-200 hover:bg-slate-50"
-                >
-                  Next →
-                </Link>
-              )}
-            </div>
+        <div className="bg-white rounded-lg border border-slate-200 p-5">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Leaderboard (top 20, all-time)</p>
+            <Link href="/admin/gameList" className="text-sm text-indigo-600 hover:underline">View raw game records &rarr;</Link>
           </div>
+          {data.leaderboard.length === 0 ? (
+            <p className="text-sm text-slate-400 text-center py-4">No games played yet</p>
+          ) : (
+            <table className="w-full">
+              <thead>
+                <tr>
+                  <th className="text-left text-xs font-medium text-slate-500 uppercase tracking-wide pb-2">#</th>
+                  <th className="text-left text-xs font-medium text-slate-500 uppercase tracking-wide pb-2">Username</th>
+                  <th className="text-right text-xs font-medium text-slate-500 uppercase tracking-wide pb-2">Total winnings</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {data.leaderboard.map((entry, i) => {
+                  const isNegative = entry.totalWinnings.includes('-');
+                  return (
+                    <tr key={entry.userId}>
+                      <td className="text-sm text-slate-400 py-2">{i + 1}</td>
+                      <td className="text-sm text-slate-900 py-2">{entry.username}</td>
+                      <td className={`text-sm text-right py-2 font-medium ${isNegative ? 'text-red-500' : 'text-emerald-600'}`}>
+                        {entry.totalWinnings}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
         </div>
       </div>
     </>

@@ -1,6 +1,8 @@
 import { Types } from 'mongoose';
 import PokerDesk, { IPokerDeskDocument, ISeat } from '@/models/pokerDesk';
 import { withDeskLock, InvalidStateError, NotFoundError } from '@/services/gameService';
+import Bot from '@/models/bot';
+import { generateGamerName } from '@/utils/helpers';
 import { PRACTICE_STARTING_CHIPS } from '@/config/constants';
 import type { BotDifficulty } from '@/config/constants';
 
@@ -50,6 +52,15 @@ export async function addBotToSeat(input: {
     } as ISeat);
 
     await desk.save();
+
+    const botName = `${generateGamerName()}_bot`;
+    await Bot.create({
+      deskId: desk._id,
+      botId: botUserId,
+      seatNumber: input.seatNumber,
+      strategy: input.strategy,
+      botName,
+    });
 
     return { desk, botUserId };
   });

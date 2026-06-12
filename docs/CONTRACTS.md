@@ -179,6 +179,7 @@ createGame(input: CreateGameInput): Promise<IPokerDeskDocument>
 
 **INVARIANTS**
 - A new game starts with at least `desk.minToStart` players (cold desk) or at least 3 players (warm desk). See LOGS.md 2026-06-01 for the cold/warm/closed state machine.
+- **Eligibility threshold (task 1.19, LOGS.md 2026-06-11):** the per-seat balance gate (`eligibleCount`, `eligibleByNumber`, and the value passed to `initializeGameState`) is `eligibilityThreshold`, computed from cold/warm state read BEFORE `firstGameStartedAt` is mutated. Cold desk (`firstGameStartedAt === null`) gates on `desk.minBuyIn` — minBuyIn is a one-time sit-down/first-hand requirement. Warm desk gates on `minChipsToContinue` = `2 * stake` (blinds) or `stake` (antes) — the cost of this hand's largest forced bet; minBuyIn is NOT a per-hand continuation requirement since chips fluctuate hand-to-hand.
 - `desk.status === 'closed'` rejects the call immediately.
 - Blinds/antes are taken from seat balances before any betting round begins.
 - On the first successful hand, `desk.firstGameStartedAt` is set (cold → warm transition).
@@ -328,19 +329,19 @@ The Phase 3 task that builds the error-response helper (1.5) consumes this mappi
 ### engine.initializeGameState
 Initializes deck, applies blinds/antes, deals hole cards. Returns `{ players, currentTurnPlayer, totalBet, pots, rounds, communityCards, deck }`. The service discards `deck` (not persisted).
 
-**SIGNATURE (updated task 1.9, 2026-06-01):**
+**SIGNATURE (updated task 1.19, 2026-06-11 — param `minBuyIn` renamed to `eligibilityThreshold`):**
 ```ts
 initializeGameState(
   seats: ISeat[],
   bType: 'blinds' | 'antes',
   stake: number,
   gameType: PokerGameType,
-  minBuyIn: number,
-  buttonSeatNumber: number       // NEW — see LOGS.md 2026-06-01
+  eligibilityThreshold: number,  // RENAMED from minBuyIn — see LOGS.md 2026-06-11
+  buttonSeatNumber: number       // see LOGS.md 2026-06-01
 ): IInitialGameState
 ```
 
-SB/BB/UTG are derived from `buttonSeatNumber` rather than hardcoded to `players[0/1/2]`. Throws if eligible seat count < 3 (heads-up not supported per `minToContinue >= 3`). `players` array still preserves seat-arrival order; only role assignments change with rotation.
+Seats are filtered to `balanceAtTable >= eligibilityThreshold`. The engine is agnostic to cold/warm desk state — the caller (`gameService.createGame`) computes `eligibilityThreshold` (cold = `minBuyIn`, warm = `2*stake` for blinds / `stake` for antes). SB/BB/UTG are derived from `buttonSeatNumber` rather than hardcoded to `players[0/1/2]`. Throws if eligible seat count < 3 (heads-up not supported per `minToContinue >= 3`). `players` array still preserves seat-arrival order; only role assignments change with rotation.
 
 ### engine.processPlayerAction
 Pure. Returns `{ actionRecord, updatedPlayer, updatedSeatBalance, updatedTotalBet }`. The service applies these to documents.
@@ -1854,7 +1855,7 @@ Body: { pokerModeId: string; tableName: string;
 - POST: `PokerDesk.create(...)` with all money/game config inherited from PokerMode.
 
 **INVARIANTS**
-- `[INVARIANT]` `gameType`, `bType`, `stake`, `minBuyIn`, `maxBuyIn`, `currency`, `mode` are inherited exclusively from the parent PokerMode — never taken from the POST body.
+- `[INVARIANT]` `gameType`, `bType`, `stake`, `minBuyIn`, `maxBuyIn`, `currency`, `mode`, `isPractice` are inherited exclusively from the parent PokerMode — never taken from the POST body. `isPractice` is derived as `pokerMode.mode === 'practice'` (B12, 2026-06-11); it is NOT a request body field.
 - `[INVARIANT]` `maxSeats` is always set equal to `maxPlayerCount` on creation.
 - `[INVARIANT]` Cross-field checks (`maxPlayerCount >= minToStart`, `minToContinue <= minToStart`) run BEFORE `dbConnect()` in POST.
 - `[INVARIANT]` `currentGame` object is never included in any response — only `seatedCount` and `currentGameStatus`.
@@ -1941,6 +1942,7 @@ GET /api/admin/analytics/dashboard
 
 **INVARIANTS**
 - `[INVARIANT]` All queries are parallel — no sequential DB calls. Structure: outer `Promise.all` with 5 groups; each group is its own `Promise.all`.
+- `[INVARIANT]` `[B11, 2026-06-11]` `games.totalArchived` and `leaderboard` both filter `PokerGameArchive` to `{ mode: 'cash' }` — practice-mode hands (bot players, fake-chip swings) are excluded from both.
 - `[INVARIANT]` Leaderboard aggregates `$sum($subtract(endingStack, startingStack))` across all `PokerGameArchive` documents per player. Negative values are valid (net losers). Serialized via `serializeMoney`.
 - `[INVARIANT]` `recentUsers` is the 5 most recently registered users, sorted by `createdAt desc`. Does NOT filter by status.
 - `[INVARIANT]` Leaderboard `username` comes from `$first: '$players.username'` in the archive — may be stale if the user renamed. No live User lookup is performed.
@@ -1964,6 +1966,7 @@ GET /api/admin/analytics/dashboard
 | `deskId` | ObjectId string | Filter by deskId; ignored if invalid ObjectId |
 | `pokerModeId` | ObjectId string | Filter by pokerModeId; ignored if invalid ObjectId |
 | `gameType` | string | Must be in VALID_GAME_TYPES set; ignored otherwise |
+| `mode` | string | `[B11, 2026-06-11]` `'cash'` \| `'practice'`; ignored otherwise. NO default — omitting `mode` returns BOTH cash and practice games. |
 | `from` | date string | `completedAt >= from`; ignored if `new Date(from)` is invalid |
 | `to` | date string | `completedAt <= to`; ignored if `new Date(to)` is invalid |
 
@@ -1975,6 +1978,7 @@ GET /api/admin/analytics/dashboard
     deskId: string;
     pokerModeId: string;
     gameType: string;
+    mode: 'cash' | 'practice';        // [B11, 2026-06-11]
     currency: string;
     totalPot: string;           // serializeMoney(totalPot, currency)
     playerCount: number;        // archive.players.length
@@ -2003,6 +2007,7 @@ GET /api/admin/analytics/dashboard
 - `[INVARIANT]` `netChange` may be negative (a player who lost chips). `serializeMoney` serializes signed integers correctly.
 - `[INVARIANT]` Sort is `{ completedAt: -1 }` — most recent first.
 - `[INVARIANT]` Invalid filter params (bad ObjectId, unknown gameType, unparseable date) are silently ignored — not an error. Malformed filters simply don't narrow the result set.
+- `[INVARIANT]` `[B11, 2026-06-11]` Unlike the dashboard and per-user analytics, this endpoint does NOT default-filter to `mode: 'cash'` — it's a raw audit/drill-down view. Use `?mode=cash` explicitly to exclude practice hands.
 
 ---
 
@@ -2052,7 +2057,7 @@ GET /api/admin/analytics/dashboard
 ```
 
 **ERRORS THROWN**
-- `AuthError('NOT_FOUND')` — `userId` is not a valid ObjectId.
+- `AuthError('NOT_FOUND')` — `userId` is not a valid ObjectId, OR no `User` document exists for `userId` (`[B14, 2026-06-11]`, mirrors `admin/users/[userId]`).
 - Any `AuthError` from `requireAdmin` → 401/403.
 
 **SIDE EFFECTS**
@@ -2064,6 +2069,47 @@ GET /api/admin/analytics/dashboard
 - `[INVARIANT]` `stats` is `null` if the aggregate returns no result (`statsResult[0]` is undefined). Do not return an empty stats object.
 - `[INVARIANT]` `netChange` and `totalNetChange` may be negative — `endingStack` can be 0 (all-in loss) while `startingStack` was positive. Serialized as-is.
 - `[INVARIANT]` Per-game player record is found via `archive.players.find(p => p.userId.toString() === userId)`. Fallback `isWinner: false` / `netChange: "₹0.00"` if somehow not found (should never happen given the find filter).
+- `[INVARIANT]` `[B11, 2026-06-11]` All three queries (`stats` aggregate's first `$match`, `countDocuments`, `find`) filter `{ mode: 'cash' }` — practice-mode hands for this user are excluded from `stats`, `games`, and `pagination.total`.
+- `[INVARIANT]` `[B14, 2026-06-11]` A `User.exists({ _id: userObjectId })` check runs alongside the other queries; if the user doesn't exist, `NOT_FOUND` is thrown regardless of whether archives exist for that id (closes the bot-id/garbage-id 200 response).
+
+---
+
+## PHASE 4 — 4.16 GET /api/admin/analytics/statistics
+
+**STATUS:** DRAFT
+
+**FILE:** `src/app/api/admin/analytics/statistics/route.ts`
+
+**AUTH:** `requireAdmin` (httpOnly cookie `token`, role `'admin'`, admin status `'active'`)
+
+**QUERY PARAMS** — none. Window is fixed at the last 30 days (UTC), inclusive of today.
+
+**OUTPUT**
+```ts
+{
+  dailySignups:       Array<{ date: string; count: number }>;   // 30 entries, oldest first, 'YYYY-MM-DD'
+  dailyCashGames:     Array<{ date: string; count: number }>;   // 30 entries — mode:'cash' archives by completedAt
+  dailyDepositVolume: Array<{ date: string; amount: number }>;  // 30 entries — RAW MINOR UNITS, see invariant
+  totals: {
+    signups30d: number;
+    cashGames30d: number;
+    depositVolume30d: string;   // serializeMoney(sum, DEFAULT_CURRENCY) — single scalar IS serialized
+  };
+  leaderboard: Array<{ userId: string; username: string; totalWinnings: string }>;  // top 20 all-time, mode:'cash'
+}
+```
+
+**ERRORS THROWN**
+- Any `AuthError` from `requireAdmin` → 401/403.
+
+**SIDE EFFECTS**
+- Read-only. Four parallel aggregates via `Promise.all`: User signups/day, cash-game archives/day, completed deposits/day (`$amount.cashAmount`), all-time cash leaderboard.
+
+**INVARIANTS**
+- `[INVARIANT]` `[1.20, 2026-06-11]` `dailyDepositVolume[].amount` is RAW INTEGER MINOR UNITS — deliberately NOT `serializeMoney`d. Charts need numeric values; the page converts with `toMajor(amount, DEFAULT_CURRENCY)` for display. This is the single documented exception to the "outbound money is always a formatted string" rule. `totals.depositVolume30d` (a scalar, not a series) IS serialized.
+- `[INVARIANT]` The 30-day window is computed in UTC (`Date.UTC`) and the `$dateToString` grouping uses UTC — buckets align with the `lastNDays` label list. Days with no rows are zero-filled, so all three series always have exactly 30 entries in date order.
+- `[INVARIANT]` `dailyCashGames` and `leaderboard` both filter `mode: 'cash'` — practice hands are excluded (consistent with dashboard/per-user analytics, B11).
+- `[INVARIANT]` `depositVolume` sums only `type: 'deposit', status: 'completed'` WalletTransactions, on `completedAt` (settlement time), not `createdAt`.
 
 ---
 
@@ -2169,19 +2215,14 @@ Returns `AppConfig.findOne({}).lean()`. If no document exists, returns defaults:
 
 ## PHASE 5 — 5.3c POST /api/admin/pokerDesks — `isPractice` field
 
-**STATUS:** STABLE (additive change to existing 4.8 endpoint)
+**STATUS:** SUPERSEDED by B12 (2026-06-11) — `isPractice` is no longer a body field.
 
-**CHANGE:** Added optional `isPractice: boolean` to the POST body. Defaults to `false` if absent.
-
-**UPDATED INPUT FIELD**
-```ts
-isPractice?: boolean  // default false — desk will use PRACTICE_STARTING_CHIPS stack, no wallet ops
-```
+**CHANGE (B12):** `isPractice` is now derived server-side as `pokerMode.mode === 'practice'`. The POST body is NOT consulted for it; any `isPractice` sent in the body is ignored. This guarantees `desk.isPractice` and `desk.mode` can never diverge (closes the free-chips-on-cash-desk path).
 
 **INVARIANTS**
-- `isPractice` is parsed as `body.isPractice === true` — any other value (string, number) is treated as `false`.
+- `isPractice` is derived: `pokerMode.mode === 'practice'`. Inherited from the parent PokerMode, same group as `mode`.
 - All other POST fields and validation logic are unchanged.
-- `serializeDesk` does not yet expose `isPractice` in the GET/POST response; it is stored on the document.
+- `serializeDesk` does not expose `isPractice` in the GET/POST response; it is stored on the document.
 
 ---
 
@@ -2339,6 +2380,7 @@ addBotToSeat(input: { deskId: string; seatNumber: number; strategy: BotDifficult
 
 **SIDE EFFECTS**
 - Appends a seat with `balanceAtTable = PRACTICE_STARTING_CHIPS` to the desk document. No wallet writes (practice mode).
+- Creates a `Bot` document (`deskId`, `botId`, `seatNumber`, `strategy`, `botName`) for persistent identity. `botName = generateGamerName() + '_bot'`, generated once at seat time.
 - Runs inside `withDeskLock(deskId)`.
 
 **INVARIANTS**
@@ -2418,3 +2460,44 @@ npx tsx --env-file=.env.local scripts/tier2Smoke.ts [--keep]
 ---
 
 # PHASE 5 — Socket / Live engine (STATUS: DRAFT — not built yet)
+---
+
+## TASK 1.16 — Bot model + evictBotsIfNoHumans
+
+### models/Bot
+
+`src/models/bot.ts` — Level 3 model (additive changes OK, breaking changes need migration plan).
+
+Fields (all required):
+- `deskId: ObjectId` — ref PokerDesk, indexed
+- `botId: ObjectId` — the synthetic seat userId (no User document)
+- `seatNumber: number`
+- `strategy: BotDifficulty` — enum `['easy','medium','hard']`
+- `botName: string` — `generateGamerName() + '_bot'`, set once at seat time
+
+**INVARIANTS**
+- [INVARIANT] One Bot document per bot seat. Created by `addBotToSeat`, deleted by `evictBotsIfNoHumans`, `Bot.deleteOne` in the broke-bot loop, or `Bot.deleteMany` on desk force-close.
+- [INVARIANT] `botName` is the authoritative display name for a bot in `PokerGameArchive`. `showdown()` merges `Bot.find({ deskId })` into `usernameByUserId` immediately after `User.find` — this is the only path that sets bot archive names.
+
+---
+
+### server.evictBotsIfNoHumans
+
+**SIGNATURE**
+```ts
+evictBotsIfNoHumans(deskId: string): Promise<IPokerDeskDocument | null>
+```
+
+**INPUT**
+- `deskId: string` — desk's `_id`
+
+**OUTPUT**
+- `IPokerDeskDocument` (status='closed', seats=[]) if bots were evicted and desk was closed
+- `null` if: desk not found, desk already closed, no Bot documents for this desk, or at least one human seat remains
+
+**SIDE EFFECTS**
+- If returning non-null: clears `desk.seats`, sets `desk.status = 'closed'`, saves, then `Bot.deleteMany({ deskId })`.
+
+**INVARIANTS**
+- [INVARIANT] Call after `broadcastDeskState` for the human leave event has already been sent — this helper only handles the bot cleanup closure, not the human leave broadcast.
+- [INVARIANT] Callers must `runtime?.botSeats.clear()` and `deskRuntime.delete(deskId)` after a non-null return.

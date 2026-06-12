@@ -77,11 +77,12 @@ changes (new optional field): straightforward. For breaking changes
 | `src/models/poker.ts` | Poker game-type metadata. |
 | `src/models/pokerMode.ts` | Template for stakes/buy-in tiers. Integer money + currency. |
 | `src/models/pokerDesk.ts` | Schema-only — NO methods. Carries embedded subdoc types (`IGamePlayer`, `IRound`) that the engine depends on. **Subdoc type changes here ripple into Level 2.** |
-| `src/models/pokerGameArchive.ts` | Finished-game archive. `username` required (the empty-string crash fix is in `gameService.showdown`). |
+| `src/models/pokerGameArchive.ts` | Finished-game archive. `username` required (the empty-string crash fix is in `gameService.showdown`). `mode: 'cash' \| 'practice'` (B11, 2026-06-11) is required, copied from `desk.mode` at archive-write time — analytics aggregates filter on it. |
 | `src/models/walletTransaction.ts` | Wallet money-flow audit ledger. Status enum standardized on `'completed'`. |
 | `src/models/bankTransaction.ts` | Deposit/withdraw transactions linked to user bank accounts. `bankAccountId` canonical (not `bankId`). |
 | `src/models/gatewayTransaction.ts` | Razorpay/payment-gateway audit rows. `gatewayOrderId` canonical (not `orderId`). |
 | `src/models/bankAccount.ts` | Verified Keep from Phase 0 — no money fields (strings/booleans only), 5-account-per-user pre-save hook is correct. |
+| `src/models/bot.ts` | Persistent bot identity per desk (`deskId`, `botId`, `seatNumber`, `strategy`, `botName`). Created by `addBotToSeat`; deleted by `evictBotsIfNoHumans` / broke-bot loop / desk force-close. `botName` is the source of bot names in `PokerGameArchive` via `gameService.showdown()`. |
 
 ---
 
@@ -134,7 +135,8 @@ for additive changes; do log signature changes.
 | `src/app/api/user/games/history/route.ts` | GET — paginated PokerGameArchive history. completedAt is a schema field (not timestamps). Defensive skip on missing player entry. |
 | `src/lib/api/money.ts` | API edge: `serializeMoney`, `serializeMoneyFields` (outbound → formatted string), `parseAmount` (inbound → strict integer minor units). |
 | `src/lib/api/errors.ts` | Single source of truth for error→HTTP-status mapping. `AuthError`, `successResponse`, `errorResponse`. |
-| `src/types/pokerModelTypes.ts` | Shared transport/DTO types derived from frozen-core models. Class A types live here. |
+| `src/app/api/admin/analytics/statistics/route.ts` | Level 4 (30-day daily series for signups/cash-games/deposit-volume + top-20 leaderboard; `dailyDepositVolume[].amount` is RAW MINOR UNITS — see LOGS.md 2026-06-11 — do not wrap in serializeMoney) |
+| `src/components/admin/widgets/TrendChart.tsx` | Level 4 ('use client'; chart.js/react-chartjs-2 wrapper; `ChartJS.register(...)` at module scope, do not move into component body) |
 | `src/middleware.ts` | Cheap auth gate for `/admin/**` and `/auth/login`. Cookie-based JWT verify with `jose` (Edge runtime). |
 | `src/utils/helpers.ts` | Keeps `generateGamerName`. |
 | `src/config/dbConnect.ts` | DB connection with global caching; imported everywhere. |
@@ -159,7 +161,7 @@ for additive changes; do log signature changes.
 | `src/components/admin/UsersFilters.tsx` | Level 4 (client component; updates URL params for users list) |
 | `src/components/admin/users/UserStatusControl.tsx` | Level 4 (client component; PATCH user status) |
 | `src/components/admin/users/UserBalanceControl.tsx` | Level 4 (client component; POST locked bonus adjustment) |
-| `src/app/admin/statistics/page.tsx` | Level 4 (games archive list; server component) |
+| `src/app/admin/statistics/page.tsx` | Level 4 (analytics dashboard: 30-day stat cards + TrendChart series + top-20 all-time leaderboard, links to /admin/gameList for the raw per-hand table; server component) |
 | `src/app/admin/users/page.tsx` | Level 4 (users list; server component; reads searchParams) |
 | `src/app/admin/users/[userId]/page.tsx` | Level 4 (user detail; server component; parallel fetches) |
 | `src/components/admin/transactions/TransactionsFilters.tsx` | Level 4 (client; bank tx filter) |
@@ -170,11 +172,12 @@ for additive changes; do log signature changes.
 | `src/components/admin/poker/PokerCreateForm.tsx` | Level 4 (client; create poker game type) |
 | `src/components/admin/poker/PokerRowActions.tsx` | Level 4 (client; edit status + two-step delete per poker row) |
 | `src/components/admin/poker/ModeCreateForm.tsx` | Level 4 (client; create mode — money inputs in major units multiplied ×100) |
-| `src/components/admin/poker/ModeRowActions.tsx` | Level 4 (client; edit status + two-step delete per mode row) |
+| `src/components/admin/poker/ModeRowActions.tsx` | Level 4 (client; edit status + edit modal for stake/minBuyIn/maxBuyIn + two-step delete per mode row) |
 | `src/app/admin/poker/page.tsx` | Level 4 (poker game types list; server component) |
 | `src/app/admin/pokerMode/[pokerId]/page.tsx` | Level 4 (modes list for a game type; server component) |
 | `src/components/admin/poker/DeskCreateForm.tsx` | Level 4 (client; create desk) |
-| `src/components/admin/poker/DeskRowActions.tsx` | Level 4 (client; status select offers active/disabled only — 'closed' is engine-only) |
+| `src/components/admin/poker/DeskRowActions.tsx` | Level 4 (client; status select offers active/disabled only — 'closed' is engine-only; edit modal for tableName/minToStart/minToContinue/maxPlayerCount) |
+| `src/components/admin/Modal.tsx` | Level 4 (shared UI helper; Tailwind-only fixed-overlay modal, Escape+backdrop close; used by ModeRowActions and DeskRowActions edit forms — additive props OK, don't change open/onClose/title/children shape without updating both callers) |
 | `src/app/admin/pokerDesk/[pokerModeId]/page.tsx` | Level 4 (desk list for a mode; server component) |
 | `src/app/admin/pokerDesk/details/[deskId]/page.tsx` | Level 4 (read-only desk config + live status; server component) |
 | `src/app/admin/gameList/page.tsx` | Level 4 (game archive list with gameType filter tabs; server component) |

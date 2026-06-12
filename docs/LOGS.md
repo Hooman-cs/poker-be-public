@@ -1477,3 +1477,175 @@ seconds to list every file pays for itself the first time something
 would have slipped.
 
 ---
+
+## 2026-06-11 — DECISION / INVARIANT — Bot model (task 1.16): persistent bot seats + bot usernames
+
+New `Bot` model (`deskId`, `botId`, `seatNumber`, `strategy`, `botName`)
+becomes the source of truth for bot identity at a desk, replacing in-memory
+`runtime.botSeats` for persistence/eviction decisions. Fixes two issues:
+
+1. **B8/B10 — practice desk closed after one hand.** `handleNeedsShowdown`
+   was `$pull`ing every bot seat after every showdown, so a desk seeded with
+   1 human + bots always dropped below `minToContinue` and force-closed.
+   Bots now persist across hands. Eviction happens only when no human seat
+   remains at the desk (server.ts `leave` handler and the 3-skip eviction
+   path) — at that point bots are `$pull`ed, their `Bot` records deleted,
+   and the desk force-closes via the existing `minToContinue` check.
+
+2. **Bot players archived as `'unknown'`.** No `User` document exists for a
+   bot's synthetic ObjectId, so `gameService.showdown()`'s
+   `usernameByUserId` map (built via `User.find`) never covered bots.
+   `showdown()` now also queries `Bot.find({ deskId })` and merges
+   `botId.toString() -> botName` into that map before `buildArchiveData`.
+   Bot names are `generateGamerName() + '_bot'`, generated once at seat time
+   in `addBotToSeat`.
+
+[INVARIANT] Bot identity/usernames are resolved via the `Bot` model, not
+`User`. Any future code building a userId->username map for a desk
+(archives, leaderboards, live broadcasts) must merge both `User.find`
+(humans) and `Bot.find({ deskId })` (bots, via `botName`) — bot ObjectIds
+will never appear in the `User` collection.
+
+[INVARIANT] A practice desk with bot seats and zero human seats must not
+remain open. Bot eviction + desk force-close happens at the moment the last
+human leaves (voluntary leave or 3-skip eviction), not after every hand.
+
+**Level 2 unlock — `gameService.showdown()`:** additive only — one extra
+`Bot.find({ deskId })` query and a `Map` merge before `buildArchiveData` is
+called. No pot/money/turn-progression logic changed. Tier-1 smoke tests
+(`playOneHand`, `playThreeHands`, `playLifecycle`) involve no bots and must
+still pass unchanged — run as regression check per Level 2 discipline.
+
+---
+
+## 2026-06-11 — DECISION / INVARIANT — task 1.17: PokerGameArchive.mode (B11), pokerDesks isPractice derivation (B12), B13–B15
+
+1. **B11.** `PokerGameArchive` gains a required `mode: 'cash' | 'practice'`
+   field, copied from `desk.mode` in `gameService.showdown()` — the same
+   one-line pattern as the existing `currency`/`gameType` copy into
+   `archivePayload`.
+
+   [INVARIANT] Any analytics aggregate over `PokerGameArchive` that reports
+   money figures (totals, leaderboards, per-user net change, games-played
+   counts feeding those figures) MUST filter `{ mode: 'cash' }`. Practice
+   archives contain bot players (`<name>_bot`, see task 1.16) and fake-chip
+   swings — not real money, not real users.
+
+   Pre-1.17 archives lack this field and won't match `mode: 'cash'` (Mongo
+   doesn't apply schema defaults to `.lean()` reads of pre-existing docs
+   missing the field). Acceptable: the DB gets wiped/reseeded
+   (`scripts/wipeDb.ts`) before Phase 7 E2E, so no historical-data gap in
+   practice.
+
+2. **B12.** `POST /api/admin/pokerDesks` no longer reads `isPractice` from
+   the request body — it's derived as `pokerMode.mode === 'practice'`,
+   joining the existing inherited-field group (gameType/stake/currency/
+   mode/etc. — see the route's "inherited from parent PokerMode" comment).
+
+   [INVARIANT] `isPractice` is always inherited from the parent `PokerMode`
+   at desk-creation time and is immutable thereafter (`PUT` already
+   silently ignores it). There is exactly one place practice-ness is
+   decided: `PokerMode.mode`. No second toggle, ever.
+
+3. **B13.** `src/server.ts` — the bot-turn-timer's
+   `runtime.botSeats.get(userId)!.strategy` non-null assertion replaced with
+   an explicit `if (!botConfig) return;` guard.
+
+4. **B14.** `GET /api/admin/analytics/users/[userId]` now 404s
+   (`AuthError('NOT_FOUND', ...)`) if no `User` document exists for the id,
+   matching `admin/users/[userId]`'s behavior. Previously returned 200 with
+   empty/fabricated stats for any valid ObjectId, including bot ids.
+
+5. **B15.** `lobby/desks/best`'s missing-`modeId` case now throws
+   `MISSING_MODE_ID` (400) instead of the bank-domain `MISSING_BANK_FIELD`.
+   `RAZORPAY_NOT_CONFIGURED` gets an explicit `case` in `statusForCode`
+   (→ 500, documented as intentional server-misconfiguration response)
+   instead of silently falling through `default`.
+
+**Level 2 unlock — `gameService.showdown()`:** additive only, one line
+(`mode: desk.mode` in `archivePayload`), identical shape to the
+currency/gameType copy already present. Tier-1 smoke tests must pass —
+they exercise `showdown()` and would fail if archive creation broke, even
+though they don't assert on `mode` specifically.
+
+---
+
+## 2026-06-11 — BUG / DECISION / INVARIANT — task 1.19: createGame eligibility threshold (cold vs warm)
+
+**Bug found during practice-mode testing:** `gameService.createGame` and
+`engine.initializeGameState` both gated per-hand eligibility on
+`balanceAtTable >= desk.minBuyIn`. For practice desks, `minBuyIn` is seeded
+equal to `PRACTICE_STARTING_CHIPS` — so any player who lost even one chip in
+hand 1 became ineligible for hand 2. `createGame` then threw
+`InvalidStateError('Not enough eligible players...')`, which
+`scheduleAutoStart`'s catch swallows silently for any message not containing
+`'closed'` — hand 2 never started, with zero error surfaced anywhere.
+
+**Root cause (general, not practice-specific):** `minBuyIn` is a *sit-down*
+gate ("can you afford this stake"), not a *per-hand continuation* gate.
+Chips fluctuate hand-to-hand by design — reusing `minBuyIn` as a
+continuation check is wrong for cash desks too, it just happened to be
+immediately fatal for practice because `minBuyIn === startingStack`.
+
+**Fix:** `createGame` now computes a single `eligibilityThreshold`:
+- Cold desk (`firstGameStartedAt === null`, first hand ever): `desk.minBuyIn`
+  — unchanged, this is the sit-down gate.
+- Warm desk (subsequent hands): `minChipsToContinue = bType === 'blinds' ?
+  stake * 2 : stake` — the cost of the largest forced bet this hand could
+  require. `minBuyIn` is NOT consulted again after the first hand.
+
+This threshold is reused for: the `eligibleCount` precheck, the
+button-rotation `eligibleByNumber` list, and the value passed into
+`engine.initializeGameState` (parameter renamed `minBuyIn` →
+`eligibilityThreshold`; internal filter logic unchanged, just a renamed/
+re-purposed parameter — the engine stays agnostic to cold/warm, the caller
+decides).
+
+[INVARIANT] `desk.minBuyIn` gates ONLY the first hand a desk ever plays
+(`firstGameStartedAt === null`). Every subsequent `createGame` call gates
+eligibility on `minChipsToContinue` (= BB for blinds, ante for antes-mode),
+never on `minBuyIn`. Player-COUNT gates (`minToStart` / `minToContinue`) are
+unchanged and orthogonal to this chip-amount gate.
+
+**Known follow-up (not fixed here):** a player whose `balanceAtTable` drops
+below `minChipsToContinue` remains seated but is excluded from
+`initializeGameState`'s `players` array indefinitely (same as today's
+behavior, just a lower bar — strictly an improvement, not a regression).
+"All-in for less than the blind" / auto-removal of such players is a
+separate design question, deferred.
+
+**Also fixed (Level 4, `server.ts`):** `scheduleAutoStart`'s catch now logs
+any `InvalidStateError` whose message doesn't contain `'closed'` to stderr
+(previously fully silent) — this class of "hand silently never starts" bug
+must be visible in server logs going forward.
+
+**Level 2 unlock — `gameService.createGame` + `engine.initializeGameState`:**
+surgical — one new local variable (`eligibilityThreshold`) computed from
+existing desk fields, substituted into the three places that previously read
+`desk.minBuyIn`/`minBuyIn` for per-hand eligibility. No change to button
+rotation, blind-posting, or archive logic. Tier-1 smoke tests
+(`playOneHand`, `playThreeHands`, `playLifecycle`) must pass — these are cash
+desks where, on a cold desk, `eligibilityThreshold === minBuyIn` (identical
+to pre-change behavior) and on warm desks all seeded balances stay far above
+`2 * stake`, so results should be byte-identical to before.
+
+---
+
+## 2026-06-11 -- DECISION / INVARIANT -- task 1.20: statistics route raw-minor-units exception
+
+New `GET /api/admin/analytics/statistics` (Level 4) returns
+`dailyDepositVolume: { date: string; amount: number }[]` as RAW INTEGER MINOR
+UNITS, not via `serializeMoney`. This is a deliberate, narrow exception to the
+usual "never return raw money" rule -- same precedent as
+`POST /api/payments/razorpay/order`'s `amount` field (CONTRACTS.md). Reason:
+the admin frontend feeds this array directly into a Chart.js dataset, which
+needs numeric Y-values; formatting each point as a currency string would force
+the chart layer to re-parse it. The route's `totals.depositVolume30d` (a
+single scalar, not a chart series) IS serialized via `serializeMoney` as normal.
+
+[INVARIANT] `dailyDepositVolume[].amount` is the ONLY field on this route
+returned as a raw integer; every other money-shaped output
+(`totals.depositVolume30d`) goes through `serializeMoney`. Do not "fix" the
+raw array to be consistent -- it is correct as integers for charting.
+
+---

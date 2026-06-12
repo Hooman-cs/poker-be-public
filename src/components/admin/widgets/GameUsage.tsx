@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import type { DashboardData } from '@/types/adminTypes';
 
 interface Props {
@@ -9,7 +10,7 @@ export default function GameUsage({ games }: Props) {
   const pct = totalActiveDesks > 0 ? (activeDesksNow / totalActiveDesks) * 100 : 0;
 
   return (
-    <div className="bg-white rounded-lg border border-slate-200 p-5">
+    <Link href="/admin/poker" className="block bg-white rounded-lg border border-slate-200 p-5 hover:border-indigo-300 transition-colors">
       <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Desk Utilization</p>
       {totalActiveDesks === 0 ? (
         <p className="text-sm text-slate-500 mt-2">No active desks configured</p>
@@ -23,6 +24,6 @@ export default function GameUsage({ games }: Props) {
           </div>
         </>
       )}
-    </div>
+    </Link>
   );
 }

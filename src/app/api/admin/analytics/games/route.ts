@@ -19,6 +19,8 @@ const VALID_GAME_TYPES = new Set([
   'Five-Card Draw',
 ]);
 
+const VALID_MODES = new Set(['cash', 'practice']);
+
 export async function GET(req: NextRequest) {
   try {
     await requireAdmin(req);
@@ -29,6 +31,7 @@ export async function GET(req: NextRequest) {
     const deskIdParam = searchParams.get('deskId') ?? '';
     const pokerModeIdParam = searchParams.get('pokerModeId') ?? '';
     const gameTypeParam = searchParams.get('gameType') ?? '';
+    const modeParam = searchParams.get('mode') ?? '';
     const fromParam = searchParams.get('from') ?? '';
     const toParam = searchParams.get('to') ?? '';
 
@@ -42,6 +45,9 @@ export async function GET(req: NextRequest) {
     }
     if (gameTypeParam && VALID_GAME_TYPES.has(gameTypeParam)) {
       filter.gameType = gameTypeParam;
+    }
+    if (modeParam && VALID_MODES.has(modeParam)) {
+      filter.mode = modeParam;
     }
 
     // Date range on completedAt — include only if the string parses to a valid date
@@ -72,6 +78,7 @@ export async function GET(req: NextRequest) {
       deskId: archive.deskId.toString(),
       pokerModeId: archive.pokerModeId.toString(),
       gameType: archive.gameType,
+      mode: archive.mode,
       currency: archive.currency,
       totalPot: serializeMoney(archive.totalPot, archive.currency),
       playerCount: archive.players.length,

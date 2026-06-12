@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
 
     const modeId = req.nextUrl.searchParams.get('modeId');
     if (!modeId) {
-      throw new AuthError('MISSING_BANK_FIELD', 'modeId query param is required');
+      throw new AuthError('MISSING_MODE_ID', 'modeId query param is required');
     }
 
     if (!mongoose.Types.ObjectId.isValid(modeId)) {

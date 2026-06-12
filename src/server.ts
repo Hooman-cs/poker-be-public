@@ -19,6 +19,7 @@ import { getBotStrategy } from '@/lib/bots/index';
 import PokerDesk from '@/models/pokerDesk';
 import type { IPokerDeskDocument } from '@/models/pokerDesk';
 import PracticeSession from '@/models/practiceSession';
+import Bot from '@/models/bot';
 import { PRACTICE_STARTING_CHIPS } from '@/config/constants';
 import type { BotDifficulty } from '@/config/constants';
 import type { JoinPayload, ActionPayload, LeavePayload } from '@/types/socketTypes';
@@ -132,6 +133,27 @@ async function closePracticeSession(
   runtime.practiceSessions.delete(userId);
 }
 
+// Evicts all bot seats and force-closes the desk if no human seat remains.
+// Returns the closed desk, or null if there's nothing to do (no bots,
+// a human is still seated, desk not found, or already closed).
+async function evictBotsIfNoHumans(deskId: string): Promise<IPokerDeskDocument | null> {
+  const desk = await PokerDesk.findById(deskId);
+  if (!desk || desk.status === 'closed') return null;
+
+  const bots = await Bot.find({ deskId }).lean();
+  if (bots.length === 0) return null;
+
+  const botIds = new Set(bots.map((b) => b.botId.toString()));
+  const humanSeatsRemain = desk.seats.some((s) => !botIds.has(s.userId.toString()));
+  if (humanSeatsRemain) return null;
+
+  desk.seats = [] as unknown as typeof desk.seats;
+  desk.status = 'closed';
+  await desk.save();
+  await Bot.deleteMany({ deskId });
+  return desk;
+}
+
 // Clears any existing turn timer, emits turn:start to the player's socket,
 // and sets a new 60s server-side timer for that player. On expiry: auto-folds
 // the player, increments skip counter, then either starts the next player's
@@ -153,7 +175,9 @@ function startTurnTimer(deskId: string, userId: string): void {
       try {
         const deskLean = await PokerDesk.findById(deskId).lean();
         if (!deskLean?.currentGame) return;
-        const strategy = getBotStrategy(runtime.botSeats.get(userId)!.strategy);
+        const botConfig = runtime.botSeats.get(userId);
+        if (!botConfig) return;
+        const strategy = getBotStrategy(botConfig.strategy);
         const botObjId = new Types.ObjectId(userId);
         const { action, amount } = strategy.selectAction(deskLean.currentGame, botObjId);
         const result = await handlePlayerAction({ deskId, userId, action, amount });
@@ -254,6 +278,14 @@ function startTurnTimer(deskId: string, userId: string): void {
         if (evictDesk.status === 'closed') {
           io.to(deskId).emit('desk:closed', {});
           deskRuntime.delete(deskId);
+        } else {
+          const closedDesk = await evictBotsIfNoHumans(deskId);
+          if (closedDesk) {
+            broadcastDeskState(deskId, 'player:left', closedDesk);
+            io.to(deskId).emit('desk:closed', {});
+            rt?.botSeats.clear();
+            deskRuntime.delete(deskId);
+          }
         }
       } catch {
         // userLeavesSeat failed (player already gone between fold and eviction).
@@ -309,25 +341,13 @@ async function handleNeedsShowdown(deskId: string): Promise<void> {
     io.to(deskId).emit('desk:closed', {});
     deskRuntime.delete(deskId);
   } else {
-    if (runtime && runtime.botSeats.size > 0) {
-      const botObjIds = [...runtime.botSeats.keys()].map(
-        (id) => new Types.ObjectId(id),
-      );
-      const updatedDesk = await PokerDesk.findByIdAndUpdate(
-        deskId,
-        { $pull: { seats: { userId: { $in: botObjIds } } } },
-        { new: true },
-      );
-      runtime.botSeats.clear();
-      if (updatedDesk && updatedDesk.seats.length < updatedDesk.minToContinue) {
-        updatedDesk.status = 'closed' as typeof updatedDesk.status;
-        await updatedDesk.save();
-        broadcastDeskState(deskId, 'player:left', updatedDesk);
-        io.to(deskId).emit('desk:closed', {});
-        deskRuntime.delete(deskId);
-        return;
-      }
-      if (updatedDesk) broadcastDeskState(deskId, 'player:left', updatedDesk);
+    const closedDesk = await evictBotsIfNoHumans(deskId);
+    if (closedDesk) {
+      broadcastDeskState(deskId, 'player:left', closedDesk);
+      io.to(deskId).emit('desk:closed', {});
+      runtime?.botSeats.clear();
+      deskRuntime.delete(deskId);
+      return;
     }
     scheduleAutoStart(deskId);
   }
@@ -364,12 +384,14 @@ function scheduleAutoStart(deskId: string, delayMs = 3000): void {
           try {
             const { desk: updated, needsShowdown } = await userLeavesSeat({ deskId, userId: uid });
             runtime.botSeats.delete(uid);
+            await Bot.deleteOne({ deskId, botId: new Types.ObjectId(uid) });
             if (needsShowdown) { await handleNeedsShowdown(deskId); return; }
             broadcastDeskState(deskId, 'player:left', updated);
             const nextTurn = updated.currentGame?.currentTurnPlayer;
             const rt = deskRuntime.get(deskId);
             if (nextTurn && rt && !rt.turnTimer) startTurnTimer(deskId, nextTurn.toString());
             if (updated.status === 'closed') {
+              await Bot.deleteMany({ deskId });
               io.to(deskId).emit('desk:closed', {});
               deskRuntime.delete(deskId);
               return;
@@ -394,11 +416,17 @@ function scheduleAutoStart(deskId: string, delayMs = 3000): void {
       }
     } catch (err) {
       if (err instanceof InvalidStateError) {
-        // Desk closed between timer set and firing, game already in progress,
-        // or not enough players — all expected; discard silently.
+        // Desk closed between timer set and firing — expected, handle and discard.
         if (err.message.includes('closed')) {
           io.to(deskId).emit('desk:closed', {});
           deskRuntime.delete(deskId);
+        } else {
+          // Not enough eligible players, game already in progress, etc. —
+          // expected occasionally, but must be visible (LOGS.md 2026-06-11:
+          // this case used to vanish silently and masked a real eligibility bug).
+          process.stderr.write(
+            `[scheduleAutoStart] createGame precondition failed for desk ${deskId}: ${err.message}\n`
+          );
         }
         return;
       }
@@ -620,6 +648,14 @@ io.on('connection', (socket) => {
       if (desk.status === 'closed') {
         io.to(deskId).emit('desk:closed', {});
         deskRuntime.delete(deskId);
+      } else {
+        const closedDesk = await evictBotsIfNoHumans(deskId);
+        if (closedDesk) {
+          broadcastDeskState(deskId, 'player:left', closedDesk);
+          io.to(deskId).emit('desk:closed', {});
+          rt?.botSeats.clear();
+          deskRuntime.delete(deskId);
+        }
       }
     } catch (err) {
       const code = err instanceof ServiceError ? err.code : 'INTERNAL_ERROR';

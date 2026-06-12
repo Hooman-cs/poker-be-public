@@ -14,7 +14,6 @@ export default function DeskCreateForm({ pokerModeId }: Props) {
   const [minToStart, setMinToStart] = useState('4');
   const [minToContinue, setMinToContinue] = useState('3');
   const [maxPlayerCount, setMaxPlayerCount] = useState('6');
-  const [isPractice, setIsPractice] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,7 +22,6 @@ export default function DeskCreateForm({ pokerModeId }: Props) {
     setMinToStart('4');
     setMinToContinue('3');
     setMaxPlayerCount('6');
-    setIsPractice(false);
     setError(null);
   }
 
@@ -55,7 +53,6 @@ export default function DeskCreateForm({ pokerModeId }: Props) {
           minToStart: minStart,
           minToContinue: minCont,
           maxPlayerCount: maxPlayers,
-          isPractice,
         }),
       });
       if (res.ok) {
@@ -131,15 +128,6 @@ export default function DeskCreateForm({ pokerModeId }: Props) {
               />
             </div>
           </div>
-          <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={isPractice}
-              onChange={(e) => setIsPractice(e.target.checked)}
-              className="rounded border-slate-300"
-            />
-            Practice desk
-          </label>
           {error && <p className="text-red-600 text-sm">{error}</p>}
           <button
             type="submit"

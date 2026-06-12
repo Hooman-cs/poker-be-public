@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import type { DashboardData } from '@/types/adminTypes';
 
 interface Props {
@@ -21,7 +22,7 @@ function StatusBadge({ status }: { status: string }) {
 
 export default function LatestPlayers({ users }: Props) {
   return (
-    <div className="bg-white rounded-lg border border-slate-200 p-5">
+    <Link href="/admin/users" className="block bg-white rounded-lg border border-slate-200 p-5 hover:border-indigo-300 transition-colors">
       <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-3">Latest Players</p>
       {users.length === 0 ? (
         <p className="text-sm text-slate-400 text-center py-4">No users yet</p>
@@ -47,6 +48,6 @@ export default function LatestPlayers({ users }: Props) {
           </tbody>
         </table>
       )}
-    </div>
+    </Link>
   );
 }

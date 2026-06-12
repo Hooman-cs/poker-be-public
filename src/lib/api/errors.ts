@@ -119,6 +119,7 @@ function statusForCode(code: string): number {
     case 'MISSING_USERNAME':
     case 'BANK_LIMIT_REACHED':
     case 'MISSING_BANK_FIELD':
+    case 'MISSING_MODE_ID':
     case 'MISSING_IMAGE':
     case 'INSUFFICIENT_BALANCE':
     case 'INVALID_PAYMENT_SIGNATURE':
@@ -133,6 +134,11 @@ function statusForCode(code: string): number {
     case 'INVALID_AMOUNT_VALUE':
     case 'UNKNOWN_CURRENCY':
       return 400;
+
+    // Intentional server-misconfiguration response — Razorpay keys absent.
+    // Not a fallthrough: the 500 here is deliberate and documented.
+    case 'RAZORPAY_NOT_CONFIGURED':
+      return 500;
 
     default:
       return 500;

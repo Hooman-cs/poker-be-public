@@ -11,6 +11,7 @@
 
 import mongoose, { Schema, Document, Model } from 'mongoose';
 import { PokerGameType } from '@/models/poker';
+import { ModeType } from '@/models/pokerDesk';
 import { SUPPORTED_CURRENCIES, DEFAULT_CURRENCY, Currency } from '@/config/constants';
 
 export interface IGamePlayer {
@@ -46,6 +47,7 @@ export interface IPokerGameArchive {
   pokerModeId: mongoose.Types.ObjectId;
   gameType: PokerGameType;
   currency: Currency;
+  mode: ModeType;
   players: IGamePlayer[];
   pots: IGamePot[];
   /** Total pot across the whole game, minor units. */
@@ -117,6 +119,11 @@ const PokerGameArchiveSchema = new Schema<IPokerGameArchiveDocument>(
       type: String,
       enum: SUPPORTED_CURRENCIES,
       default: DEFAULT_CURRENCY,
+      required: true,
+    },
+    mode: {
+      type: String,
+      enum: ['cash', 'practice'],
       required: true,
     },
     players: { type: [GamePlayerSchema], default: [] },

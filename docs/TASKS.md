@@ -107,6 +107,92 @@ Per `FROZEN_CORE_EDITS.md`. After this phase is green and reviewed, these files 
 - [x] 1.15 `scripts/seedPracticeDesks.ts` — creates 1 Poker (upsert) + 1 PokerMode
            (mode: 'practice') + 20 PokerDesks (isPractice: true, 6 seats, minToStart: 3).
            Idempotent via PokerMode.description marker. Prints all 20 deskIds.
+- [x] 1.16 **Bot model** — fixes B8/B10. New `src/models/bot.ts` (deskId, botId,
+           seatNumber, strategy, botName). `addBotToSeat` writes a Bot record per
+           seated bot, with `botName = generateGamerName() + '_bot'`. Replaces
+           in-memory `runtime.botSeats` as the source of truth for bot identity
+           AND eviction. Two fixes: (1) practice desks no longer close after one
+           hand — bots persist across hands; new `evictBotsIfNoHumans` helper
+           (server.ts) evicts bots + force-closes the desk only when no human seat
+           remains, called from handleNeedsShowdown / leave / 3-skip eviction paths.
+           (2) `gameService.showdown()` (Level 2, surgical — see LOGS.md 2026-06-11)
+           merges `Bot.find({deskId})` botName into `usernameByUserId` so bot players
+           archive correctly instead of `'unknown'`. Tier-1 smoke tests run as
+           regression check.
+- [x] 1.17 **B11–B15 fixes** — PokerGameArchive gains a required `mode: 'cash'|'practice'`
+           field (Level 3, additive), copied from `desk.mode` in `gameService.showdown()`
+           (Level 2, one line — see LOGS.md 2026-06-11). Dashboard `totalArchived` +
+           leaderboard, and per-user `analytics/users/[userId]` (stats/games/total),
+           filter to `mode: 'cash'`; `analytics/games` gets an optional `mode` filter +
+           `mode` in output (no default, B11e). `pokerDesks` POST derives `isPractice`
+           from `pokerMode.mode === 'practice'` (B12). `server.ts` bot-strategy
+           non-null assertion replaced with explicit guard (B13).
+           `analytics/users/[userId]` 404s if no `User` exists (B14).
+           `lobby/desks/best` missing-`modeId` uses new `MISSING_MODE_ID` (400);
+           `errors.ts` adds that code + an explicit `RAZORPAY_NOT_CONFIGURED` → 500
+           case (B15). Tier-1 smoke tests pass (Level 2 touched).
+- [x] 1.19 **createGame eligibility threshold (cold vs warm)** — Level 2 fix
+           (`gameService.createGame` + `engine.initializeGameState`, see
+           LOGS.md 2026-06-11). Practice hand 2 silently never started: both
+           functions gated per-hand eligibility on `balanceAtTable >=
+           desk.minBuyIn`, and practice `minBuyIn === PRACTICE_STARTING_CHIPS`,
+           so any chip loss in hand 1 made a player ineligible for hand 2 —
+           `createGame` threw `InvalidStateError`, silently swallowed by
+           `scheduleAutoStart`'s catch. Fix: cold desk (first hand ever) keeps
+           `minBuyIn` as the sit-down gate; warm desk (subsequent hands) gates
+           on `minChipsToContinue = bType==='blinds' ? stake*2 : stake`
+           instead. `initializeGameState`'s `minBuyIn` param renamed
+           `eligibilityThreshold` (caller-determined). `server.ts`
+           `scheduleAutoStart` catch (Level 4) now logs non-"closed"
+           `InvalidStateError`s instead of swallowing them silently. Tier-1
+           smoke tests pass.
+- [x] 1.20 **Statistics page redesign + Overview cross-links** -- all Level 4.
+           New `GET /api/admin/analytics/statistics` route: 30-day daily series
+           (signups, cash games played, deposit volume -- raw minor units, see
+           LOGS.md 2026-06-11) + 30-day totals + top-20 all-time leaderboard.
+           New `TrendChart` component (chart.js/react-chartjs-2, already in
+           package.json, previously unused). `statistics/page.tsx` rewritten:
+           3 stat cards, 3 charts (2 line + 1 bar), top-20 leaderboard table,
+           link to `/admin/gameList` for the raw per-hand table (which keeps
+           its existing view, untouched). 7 dashboard widgets
+           (UserStats/GameStats/BankStats/GameUsage/BankTransactionOverview/
+           LatestPlayers/LeaderBoard) get additive cross-links to
+           users/statistics/transactions/poker. Also: investigate whether
+           `src/types/pokerModelTypes.ts` has any external importers -- delete
+           if dead, otherwise report importers for review.
+- [ ] 1.21 **Multi-hand integration retest (post-1.19/1.20)** -- manual, real
+           frontend + real socket server, no Claude Code prompt (or a small
+           diagnostic-only prompt if a new bug is found). Goal: confirm the
+           1.19 eligibility fix actually resolves "hand 2 never starts" in
+           practice via the real client (not just the Tier-1 scripts), and do
+           the same for a cash desk with 2+ real users across several hands.
+           Checklist:
+             - Practice desk: play through hand 1, confirm hand 2+ auto-starts
+               with no manual reload.
+             - If a hand still fails to start, check socket-server stderr for
+               the new `[scheduleAutoStart] createGame precondition failed...`
+               line (added in 1.19) -- that message pinpoints the exact gate
+               that's failing.
+             - Cash desk: 2+ real users, several consecutive hands, confirm
+               button rotation + balances look correct across hands.
+             - Re-check the "closed desk with seatedCount: 1, can't delete"
+               symptom from earlier in this session. If it recurs, capture
+               `db.pokerdesks.findOne({_id:...})` for that desk -- needed to
+               diagnose, code-reading alone couldn't find the path that
+               produces that state.
+             - Admin: open the redesigned `/admin/statistics` page (task 1.20)
+               and confirm charts render with real data, and the Overview
+               cross-links navigate correctly.
+           Feeds into Phase 7.3 (Tier-3 live-gameplay E2E) -- do this first,
+           since 7.3 will otherwise hit the same hand-2 issue this retest is
+           meant to catch early.
+- [x] 1.18 **Admin frontend fixes** — edit modals (Option B), back links, remove
+           isPractice checkbox. New shared `Modal` component (Tailwind, no deps).
+           `ModeRowActions` gets "Edit" button + modal for stake/minBuyIn/maxBuyIn.
+           `DeskRowActions` gets "Edit" button + modal for tableName/minToStart/
+           minToContinue/maxPlayerCount. Back links added to pokerMode/[pokerId],
+           pokerDesk/[pokerModeId], users/[userId]. `DeskCreateForm` isPractice
+           checkbox removed (B12 frontend half). All Level 4, no backend changes.
 
 ---
 
@@ -284,17 +370,55 @@ frontend bugs are for the frontend developer.
            bot records. Re-implemented via dedicated `Bot` model in task 1.16.)
 
 ### Backend — fourth pass
-- [ ] B10 — B8 `$pull` fails silently — bots not stored in DB so no reliable way to
-           identify bot seat userId values for `$pull`. Fix: `Bot` model
-           (`deskId`, `botId`, `seatNumber`, `strategy`). `addBotToSeat` creates a
-           `Bot` record; B8 reads `Bot.find({ deskId })` → `$pull` by exact `botId`
-           values → `Bot.deleteMany({ deskId })`. See task 1.16.
+- [x] B10 — B8 `$pull` fails silently — bots not stored in DB so no reliable way to
+           identify bot seat userId values for `$pull`. Fixed via `Bot` model
+           (task 1.16): `addBotToSeat` creates a `Bot` record; bots persist across
+           hands and are evicted (via `evictBotsIfNoHumans`) only when no human
+           seat remains, at which point `Bot.deleteMany({ deskId })` runs.
 
 ### Frontend (frontend developer to fix)
 - [ ] B4 — Double slash in lobby URL.
 - [ ] B5 — Oscillating amounts display.
 - [ ] B9 — Frontend emits `practice (auto-restart)` immediately after `game:showdown`.
            Correct flow: wait for `desk:closed`, then `desks/best` + `practice` on new desk.
+
+### Backend — fifth pass (pre-7.x audit, 2026-06-11)
+- [x] B11 — [medium] Practice hands are archived in `PokerGameArchive` with no
+           `mode`/`isPractice` discriminator. Admin dashboard leaderboard and
+           per-user `analytics/users/[userId]` totals aggregate ALL archives,
+           so bot `<name>_bot` players can appear as "top winners" and
+           practice fake-chip swings (±PRACTICE_STARTING_CHIPS/hand) are summed
+           and rendered as real ₹. Fix: add `mode` to `PokerGameArchive`
+           (mirrors `desk.mode`, same pattern as existing `currency`/`gameType`
+           copy in `showdown()` — Level 2, surgical), filter analytics
+           aggregates to `mode: 'cash'`.
+- [x] B12 — [medium] `POST /api/admin/pokerDesks` sets `isPractice` from the
+           request body independently of the inherited `PokerMode.mode`
+           (CONTRACTS.md:82 says `isPractice` is the sole practice gate, used
+           by `addUserToSeat` to decide free chips vs wallet debit). An admin
+           can create an `isPractice: true` desk under a `mode: 'cash'`
+           PokerMode → free-chip seating on a desk labeled/archived as cash.
+           Fix: derive `isPractice` from `pokerMode.mode === 'practice'`
+           instead of trusting the body. Also fixes CONTRACTS.md drift
+           (POST body entry omits `isPractice`).
+- [x] B13 — [low] `src/server.ts:178` — bot turn-timer uses
+           `runtime.botSeats.get(userId)!`. After `evictBotsIfNoHumans` clears
+           `botSeats` and deletes the runtime, a pending 1.5s bot timer can
+           fire with `userId` no longer in the map; the `!` masks `undefined`
+           and the surrounding try/catch swallows the resulting error. Fix:
+           explicit null-check + early return.
+- [x] B14 — [low] `GET /api/admin/analytics/users/[userId]` returns 200 with
+           aggregated (possibly empty) stats for ANY valid ObjectId, including
+           bot synthetic ids — unlike `admin/users/[userId]` which 404s when no
+           `User` exists. Fix: verify `User.findById(userId)` first, mirroring
+           the users-detail route.
+- [x] B15 — [low] Two error-code issues in `src/lib/api/errors.ts` /
+           `src/app/api/lobby/desks/best/route.ts`: (1) missing `modeId` query
+           param throws `MISSING_BANK_FIELD` (a bank-domain code) on a
+           poker-lobby endpoint; (2) `RAZORPAY_NOT_CONFIGURED` has no entry in
+           `statusForCode` and falls through to default 500 (functionally fine,
+           but undocumented). Fix: dedicated code for the lobby case; either
+           map `RAZORPAY_NOT_CONFIGURED` explicitly or document the default.
 
 ---
 

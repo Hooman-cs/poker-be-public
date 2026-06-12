@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import type { DashboardData } from '@/types/adminTypes';
 
 interface Props {
@@ -8,7 +9,7 @@ export default function LeaderBoard({ entries }: Props) {
   const top10 = entries.slice(0, 10);
 
   return (
-    <div className="bg-white rounded-lg border border-slate-200 p-5">
+    <Link href="/admin/statistics" className="block bg-white rounded-lg border border-slate-200 p-5 hover:border-indigo-300 transition-colors">
       <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-3">Leaderboard</p>
       {top10.length === 0 ? (
         <p className="text-sm text-slate-400 text-center py-4">No games played yet</p>
@@ -31,6 +32,6 @@ export default function LeaderBoard({ entries }: Props) {
           })}
         </ul>
       )}
-    </div>
+    </Link>
   );
 }

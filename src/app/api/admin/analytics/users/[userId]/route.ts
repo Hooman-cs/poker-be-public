@@ -10,6 +10,7 @@ import type { Currency } from '@/config/constants';
 
 import PokerGameArchive from '@/models/pokerGameArchive';
 import type { IPokerGameArchive } from '@/models/pokerGameArchive';
+import User from '@/models/user';
 
 type LeanArchive = IPokerGameArchive & { _id: Types.ObjectId };
 
@@ -42,9 +43,9 @@ export async function GET(
 
     const userObjectId = new Types.ObjectId(userId);
 
-    const [statsResult, total, archives] = await Promise.all([
+    const [statsResult, total, archives, userExists] = await Promise.all([
       PokerGameArchive.aggregate<StatsResult>([
-        { $match: { 'players.userId': userObjectId } },
+        { $match: { 'players.userId': userObjectId, mode: 'cash' } },
         { $unwind: '$players' },
         { $match: { 'players.userId': userObjectId } },
         {
@@ -60,13 +61,18 @@ export async function GET(
           },
         },
       ]),
-      PokerGameArchive.countDocuments({ 'players.userId': userObjectId }),
-      PokerGameArchive.find({ 'players.userId': userObjectId })
+      PokerGameArchive.countDocuments({ 'players.userId': userObjectId, mode: 'cash' }),
+      PokerGameArchive.find({ 'players.userId': userObjectId, mode: 'cash' })
         .sort({ completedAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
         .lean<LeanArchive[]>(),
+      User.exists({ _id: userObjectId }),
     ]);
+
+    if (!userExists) {
+      throw new AuthError('NOT_FOUND', 'User not found');
+    }
 
     const raw = statsResult[0] ?? null;
     const currency = (raw?.currency as Currency) ?? DEFAULT_CURRENCY;

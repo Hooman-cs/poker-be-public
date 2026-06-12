@@ -112,14 +112,14 @@ export async function POST(req: NextRequest) {
       throw new AuthError('INVALID_STATE', 'minToContinue must be <= minToStart');
     }
 
-    const isPractice = body.isPractice === true; // default false if absent
-
     await dbConnect();
 
     const pokerMode = await PokerMode.findById(body.pokerModeId).lean<LeanPokerMode>();
     if (!pokerMode) {
       throw new AuthError('NOT_FOUND', 'Poker mode not found');
     }
+
+    const isPractice = pokerMode.mode === 'practice';
 
     const desk = await PokerDesk.create({
       pokerModeId: body.pokerModeId,

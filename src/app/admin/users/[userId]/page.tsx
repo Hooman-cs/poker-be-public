@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import Header from '@/components/admin/Header';
 import UserStatusControl from '@/components/admin/users/UserStatusControl';
 import UserBalanceControl from '@/components/admin/users/UserBalanceControl';
@@ -86,6 +87,12 @@ export default async function UserDetailPage({
 
   return (
     <>
+      <Link
+        href="/admin/users"
+        className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-indigo-600 mb-2 px-6 pt-4"
+      >
+        ← Back to users
+      </Link>
       <Header title={userData.user.username} subtitle="User detail" />
       <div className="p-6 space-y-6">
 

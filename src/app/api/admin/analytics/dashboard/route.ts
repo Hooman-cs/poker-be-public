@@ -59,7 +59,7 @@ export async function GET(req: NextRequest) {
 
       // Group 3 — Game stats
       Promise.all([
-        PokerGameArchive.countDocuments({}),
+        PokerGameArchive.countDocuments({ mode: 'cash' }),
         PokerDesk.countDocuments({ currentGameStatus: 'in-progress' }),
         PokerDesk.countDocuments({ status: 'active' }),
       ]),
@@ -75,6 +75,7 @@ export async function GET(req: NextRequest) {
       // Group 5 — Leaderboard: top 10 by net winnings across all archived games
       Promise.all([
         PokerGameArchive.aggregate<LeaderboardEntry>([
+          { $match: { mode: 'cash' } },
           { $unwind: '$players' },
           {
             $group: {
